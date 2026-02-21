@@ -1,0 +1,22 @@
+# Environment — never commit secrets
+.env
+
+# Virtual environment
+.venv/
+
+# Project data (large, user-specific)
+projects/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+*.swp

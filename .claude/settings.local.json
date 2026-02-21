@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(cmd /c \"dir D:\\\\wizard\")",
+      "Bash(cmd /c \"dir D:\\\\wizard /a\")",
+      "Bash(cmd /c \"dir D:\\\\wizard /a /s 2>&1\")",
+      "Bash(cmd /c \"dir C:\\\\Users\\\\akaas\\\\.claude\\\\projects\\\\D--wizard\\\\ /a 2>&1\")",
+      "Bash(cmd /c \"if exist C:\\\\Users\\\\akaas\\\\.claude\\\\projects\\\\D--wizard\\\\ \\(dir C:\\\\Users\\\\akaas\\\\.claude\\\\projects\\\\D--wizard\\\\ /a /s\\) else \\(echo not found\\)\")",
+      "Bash(cmd /c:*)",
+      "Bash(python -m venv:*)",
+      "Bash(echo:*)",
+      "Bash(python -c:*)",
+      "Bash(\"C:\\\\Users\\\\akaas\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -m venv \"D:\\\\wizard\\\\.venv\")",
+      "Bash(\"D:/wizard/.venv/Scripts/pip.exe\" install flask flask-cors anthropic)",
+      "Bash(\"D:/wizard/.venv/Scripts/pip.exe\" install faster-whisper sentence-transformers chromadb)"
+    ]
+  }
+}

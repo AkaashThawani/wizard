@@ -1,0 +1,60 @@
+{
+  "llm": {
+    "provider": "gemini",
+    "model": "gemini-2.5-flash"
+  },
+  "device": {
+    "cuda_enabled": true,
+    "auto_detect": true,
+    "preferred_providers": ["CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"]
+  },
+  "agents": {
+    "transcription": {
+      "enabled": true,
+      "auto_run": true
+    },
+    "color": {
+      "enabled": false,
+      "auto_analyze": false,
+      "model": "openai/clip-vit-base-patch32"
+    },
+    "audio": {
+      "enabled": false,
+      "auto_analyze": false
+    },
+    "search": {
+      "enabled": true
+    },
+    "edit": {
+      "enabled": true
+    },
+    "export": {
+      "enabled": true
+    }
+  },
+  "whisper": {
+    "model_size": "auto",
+    "model_size_8gb": "base",
+    "model_size_16gb": "small",
+    "model_size_32gb": "large-v3",
+    "language": null,
+    "device": "auto",
+    "use_onnx": true,
+    "force_cpu": false
+  },
+  "embeddings": {
+    "backend": "onnx",
+    "device": "auto"
+  },
+  "pipeline": {
+    "silence_threshold": 0.5,
+    "min_segment_duration": 1.0,
+    "filler_words": ["um", "uh", "er", "ah", "hmm", "hm"],
+    "enable_enrichment": true,
+    "enable_vectorization": true,
+    "parallel_analysis": true
+  },
+  "export": {
+    "default_resolution": "preview"
+  }
+}

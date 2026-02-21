@@ -1,0 +1,28 @@
+# Base dependencies (torch and onnxruntime installed by setup.py based on GPU detection)
+
+# ── Core web server ──────────────────────────────────────────────────────────
+flask>=3.0.0
+flask-cors>=4.0.0
+python-dotenv>=1.0.0
+
+# ── LLM providers ───────────────────────────────────────────────────────────
+anthropic>=0.40.0
+google-generativeai>=0.3.0
+
+# ── ML & NLP (excluding torch/onnxruntime) ───────────────────────────────────
+optimum>=1.14.0
+transformers>=4.30.0
+sentence-transformers>=3.0.0
+
+# ── Vector database ──────────────────────────────────────────────────────────
+chromadb>=0.5.0
+
+# ── Visual & Audio analysis ──────────────────────────────────────────────────
+Pillow>=10.0.0
+numpy>=1.24.0
+librosa>=0.10.0
+soundfile>=0.12.0
+numba>=0.57.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+psutil>=5.9.0

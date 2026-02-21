@@ -1,0 +1,63 @@
+# Wizard — Python dependencies
+# Install: pip install -r requirements.txt
+# Requires Python 3.10+
+
+# ── Installation Instructions ────────────────────────────────────────────────
+# 
+# 1. Base installation (all platforms):
+#    pip install -r requirements.txt
+#
+# 2. GPU acceleration (OPTIONAL - platform-specific, not required):
+#    
+#    Windows/Linux with NVIDIA GPU:
+#      pip install onnxruntime-gpu torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#    
+#    Mac Apple Silicon (M1/M2/M3):
+#      pip install torch torchvision
+#    
+#    CPU only:
+#      Nothing needed - already included in requirements.txt!
+#
+# The project auto-detects GPU availability and uses it if present.
+# GPU packages are NOT in requirements.txt to maintain platform independence.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Core web server ──────────────────────────────────────────────────────────
+flask>=3.0.0
+flask-cors>=4.0.0
+python-dotenv>=1.0.0
+
+# ── LLM providers ───────────────────────────────────────────────────────────
+anthropic>=0.40.0
+# openai>=1.50.0          # uncomment if using OpenAI provider
+google-generativeai>=0.3.0  # uncomment if using Gemini provider
+
+# ── Transcription & ML (CPU-compatible, works on all platforms) ──────────────
+# Base packages - platform-independent:
+optimum[onnxruntime]>=1.14.0  # ONNX Runtime (CPU version)
+transformers>=4.30.0
+
+# NOTE: For GPU acceleration, see installation instructions at top of file.
+# GPU packages (onnxruntime-gpu, torch) are installed separately per platform.
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+sentence-transformers>=3.0.0
+# Downloads ~80 MB model (all-MiniLM-L6-v2) on first use
+
+# ── Vector database ──────────────────────────────────────────────────────────
+chromadb>=0.5.0
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+psutil>=5.9.0  # RAM detection for auto model selection
+
+# FFmpeg is a system dependency — install separately:
+#   Windows: winget install Gyan.FFmpeg   (or scoop install ffmpeg)
+#   Mac:     brew install ffmpeg
+#   Linux:   apt install ffmpeg
+
+# ── Visual & Audio analysis ──────────────────────────────────────────────────
+Pillow>=10.0.0             # Image processing for ColorAgent
+numpy>=1.24.0              # Required by librosa and image analysis
+librosa>=0.10.0            # AudioAgent — audio feature extraction
+soundfile>=0.12.0          # Required by librosa for audio I/O
+numba>=0.57.0              # librosa performance optimization
