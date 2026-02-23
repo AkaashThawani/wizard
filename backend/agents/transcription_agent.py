@@ -412,13 +412,25 @@ class TranscriptionAgent(BaseAgent):
             logger.info("Vectorization disabled by config")
 
         # ----------------------------------------------------------------
+        # Create complete segment list with silent gaps
+        # ----------------------------------------------------------------
+        from pipeline.timeline_builder import fill_silent_gaps
+        
+        logger.info("Creating complete segment list with silent gaps...")
+        complete_segments = fill_silent_gaps(
+            speech_segments=segments,
+            video_duration=self.state.video_duration,
+            min_silence_duration=self.config.get("silence_threshold", 0.5)
+        )
+        
+        # ----------------------------------------------------------------
         # Write to state
         # ----------------------------------------------------------------
-        self.state.add_segments(segments)
+        self.state.add_segments(complete_segments)
 
-        # Set initial sequence = all segments in order
+        # Set initial sequence = all segments in order (speech + silent)
         from timeline.models import SequenceEntry
-        sequence = [SequenceEntry(segment_id=seg.id, transition_in=None) for seg in segments]
+        sequence = [SequenceEntry(segment_id=seg.id, transition_in=None) for seg in complete_segments]
         self.state.set_sequence(sequence)
 
         self._emit("complete", {"segment_count": len(segments)})

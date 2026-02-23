@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ class TimelineState:
         self.project_id = project_id
         self.projects_dir = Path(projects_dir)
         self._path = self.projects_dir / project_id / "timeline.json"
+        self._lock = threading.Lock()  # Thread-safe access to _data
 
         # In-memory state
         self._data: dict = self._empty_state()
@@ -110,6 +112,87 @@ class TimelineState:
             self._data["segment_pool"][segment_id]["chroma_id"] = chroma_id
         self.save()
 
+    def get_effective_segment(self, segment_id: str) -> Segment | None:
+        """
+        Get segment with edits applied (virtual segment).
+        
+        Merges segment_pool[segment_id] + layers["edit_agent"][segment_id]
+        to return the current state of the segment after all edit decisions.
+        
+        This is the method agents should use instead of get_segment() to ensure
+        they read the current edited state, not the original immutable state.
+        
+        Args:
+            segment_id: Segment ID to retrieve
+        
+        Returns:
+            Segment with trim/effects applied, or None if not found
+        """
+        # Get base segment
+        base = self.get_segment(segment_id)
+        if base is None:
+            return None
+        
+        # Get edit layer (if exists)
+        edit_layer = self.get_layer("edit_agent", segment_id)
+        if not edit_layer or not edit_layer.get("trim"):
+            # No edits or no trim edits - return original
+            return base
+        
+        # Apply edits and return virtual segment
+        return self._apply_edit_layer(base, edit_layer)
+
+    def _apply_edit_layer(self, base_segment: Segment, edit_layer: dict) -> Segment:
+        """
+        Apply edit decisions to base segment.
+        
+        Handles:
+        - trim_start/trim_end: Adjust start/end times, filter words
+        - effects: Metadata only (applied during export, not here)
+        
+        Args:
+            base_segment: Original segment from segment_pool
+            edit_layer: Edit decisions from layers["edit_agent"]
+        
+        Returns:
+            Modified segment (new instance, original unchanged)
+        """
+        from timeline.models import Segment, WordToken
+        
+        # Get trim decisions
+        trim = edit_layer.get("trim", {})
+        trim_start = trim.get("start")  # Seconds to remove from beginning
+        trim_end = trim.get("end")      # Seconds to remove from end
+        
+        if trim_start is None and trim_end is None:
+            # No trim edits - return original
+            return base_segment
+        
+        # Apply trims
+        new_start = base_segment.start + (trim_start or 0.0)
+        new_end = base_segment.end - (trim_end or 0.0)
+        new_duration = new_end - new_start
+        
+        # Filter words to trimmed range
+        trimmed_words = [
+            w for w in base_segment.words
+            if new_start <= w.start < new_end
+        ]
+        
+        # Create modified segment (new instance)
+        return Segment(
+            id=base_segment.id,
+            start=new_start,
+            end=new_end,
+            duration=new_duration,
+            text=base_segment.text,  # Keep original text (full sentence)
+            words=trimmed_words,
+            speaker=base_segment.speaker,
+            source=base_segment.source,
+            chroma_id=base_segment.chroma_id,
+            is_silent=base_segment.is_silent,
+        )
+
     # ------------------------------------------------------------------
     # Current sequence
     # ------------------------------------------------------------------
@@ -120,6 +203,12 @@ class TimelineState:
 
     def set_sequence(self, entries: list[SequenceEntry]) -> None:
         self._data["current"]["sequence"] = [sequence_entry_to_dict(e) for e in entries]
+        self.save()
+
+    def append_to_sequence(self, segment_id: str) -> None:
+        """Append a segment to the current sequence."""
+        entry = SequenceEntry(segment_id=segment_id, transition_in=None)
+        self._data["current"]["sequence"].append(sequence_entry_to_dict(entry))
         self.save()
 
     # ------------------------------------------------------------------
@@ -134,9 +223,37 @@ class TimelineState:
         )
 
     def set_layer(self, agent_name: str, segment_id: str, data: dict) -> None:
+        with self._lock:  # Protect dict modifications from concurrent writes
+            if agent_name not in self._data["layers"]:
+                self._data["layers"][agent_name] = {}
+            self._data["layers"][agent_name][segment_id] = data
+        self.save()  # save() has its own lock
+
+    def set_layers_batch(self, agent_name: str, data_map: dict[str, dict]) -> None:
+        """
+        Set multiple segment layers at once (single save).
+        
+        More efficient than calling set_layer() multiple times,
+        as it performs only one file write at the end.
+        
+        Args:
+            agent_name: Agent namespace (e.g., "color_agent", "audio_agent")
+            data_map: Dictionary mapping segment_id → layer_data
+        
+        Example:
+            state.set_layers_batch("color_agent", {
+                "seg_001": [{"time": 0, "brightness": 0.5, ...}],
+                "seg_002": [{"time": 5, "brightness": 0.6, ...}]
+            })
+        """
         if agent_name not in self._data["layers"]:
             self._data["layers"][agent_name] = {}
-        self._data["layers"][agent_name][segment_id] = data
+        
+        # Update all segments in one operation
+        for segment_id, data in data_map.items():
+            self._data["layers"][agent_name][segment_id] = data
+        
+        # Single save for entire batch
         self.save()
 
     def get_agent_layer(self, agent_name: str) -> dict:
@@ -273,9 +390,10 @@ class TimelineState:
     # ------------------------------------------------------------------
 
     def save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, ensure_ascii=False)
+        with self._lock:  # Protect JSON serialization from concurrent dict modification
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
 
     def load(self) -> None:
         with open(self._path, "r", encoding="utf-8") as f:
@@ -304,6 +422,11 @@ class TimelineState:
     @property
     def source_path(self) -> str:
         return self._data.get("source", {}).get("path", "")
+
+    @property
+    def video_duration(self) -> float:
+        """Get video duration in seconds."""
+        return self._data.get("source", {}).get("duration", 0.0)
 
     def segment_count(self) -> int:
         return len(self._data["segment_pool"])

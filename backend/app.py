@@ -25,20 +25,56 @@ import os
 import queue
 import threading
 import uuid
+import warnings
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Any
 
 from dotenv import load_dotenv
 load_dotenv()  # loads .env from project root before anything else
 
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
+
+# Suppress warnings from transformers and other libraries
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore")
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_LOG_LEVEL"] = "ERROR"
+os.environ["CHROMA_TELEMETRY"] = "False"
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Only show WARNING and ERROR (suppress INFO)
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# But keep our app's logger at INFO level for important messages
+logger.setLevel(logging.INFO)
+
+# Enable LLM client logging to see tool calls
+logging.getLogger("llm.client").setLevel(logging.INFO)
+logging.getLogger("orchestrator.llm_orchestrator_node").setLevel(logging.INFO)
+
+# Enable export and FFmpeg logging to see export process
+logging.getLogger("agents.export_agent").setLevel(logging.INFO)
+logging.getLogger("media.ffmpeg_wrapper").setLevel(logging.INFO)
+logging.getLogger("media.effect_compiler").setLevel(logging.INFO)
+
+# Silence ALL noisy libraries completely
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("huggingface_hub").setLevel(logging.CRITICAL)
+logging.getLogger("transformers").setLevel(logging.CRITICAL)
+logging.getLogger("sentence_transformers").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+logging.getLogger("filelock").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 # ------------------------------------------------------------------
 # Configuration
@@ -65,6 +101,15 @@ _projects: dict[str, dict] = {}
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:5173"])  # Allow Vite dev server
 
+# Initialize SocketIO with CORS support
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=["http://localhost:5173"],
+    async_mode='threading',
+    logger=False,
+    engineio_logger=False
+)
+
 
 # ------------------------------------------------------------------
 # Helper: get or create project context
@@ -72,6 +117,70 @@ CORS(app, origins=["http://localhost:5173"])  # Allow Vite dev server
 
 def _get_project(project_id: str) -> dict | None:
     return _projects.get(project_id)
+
+
+def _register_agents_from_config(
+    state: Any,
+    config: dict,
+    llm_client: Any,
+    progress_callback: Any
+) -> Any:
+    """
+    Dynamically register agents based on config.json settings.
+    
+    Only registers agents where config["agents"][agent_name]["enabled"] == True
+    
+    Args:
+        state: TimelineState instance
+        config: Loaded config.json
+        llm_client: LLM client for agents that need it
+        progress_callback: SSE callback
+    
+    Returns:
+        AgentRegistry with enabled agents registered
+    """
+    from agents.registry import AgentRegistry
+    from agents.transcription_agent import TranscriptionAgent
+    from agents.search_agent import SearchAgent
+    from agents.edit_agent import EditAgent
+    from agents.export_agent import ExportAgent
+    from agents.color_agent import ColorAgent
+    from agents.audio_agent import AudioAgent
+    from agents.conversation_agent import ConversationAgent
+    
+    registry = AgentRegistry()
+    agent_config = {"whisper_model": config.get("whisper", {}).get("model_size", "base"), **config}
+    
+    # Conditional registration based on config
+    if config.get("agents", {}).get("transcription", {}).get("enabled", True):
+        registry.register(TranscriptionAgent(state, agent_config, progress_callback))
+        logger.info("✓ Registered TranscriptionAgent")
+    
+    if config.get("agents", {}).get("search", {}).get("enabled", True):
+        registry.register(SearchAgent(state, agent_config, llm_client, progress_callback))
+        logger.info("✓ Registered SearchAgent")
+    
+    if config.get("agents", {}).get("edit", {}).get("enabled", True):
+        registry.register(EditAgent(state, agent_config, progress_callback))
+        logger.info("✓ Registered EditAgent")
+    
+    if config.get("agents", {}).get("export", {}).get("enabled", True):
+        registry.register(ExportAgent(state, agent_config, progress_callback))
+        logger.info("✓ Registered ExportAgent")
+    
+    if config.get("agents", {}).get("color", {}).get("enabled", True):
+        registry.register(ColorAgent(state, agent_config, progress_callback))
+        logger.info("✓ Registered ColorAgent")
+    
+    if config.get("agents", {}).get("audio", {}).get("enabled", True):
+        registry.register(AudioAgent(state, agent_config, progress_callback))
+        logger.info("✓ Registered AudioAgent")
+    
+    # Always register ConversationAgent (handles casual chat)
+    registry.register(ConversationAgent(state, agent_config, progress_callback))
+    logger.info("✓ Registered ConversationAgent")
+    
+    return registry
 
 
 def _create_project_context(project_id: str) -> dict:
@@ -84,7 +193,9 @@ def _create_project_context(project_id: str) -> dict:
     from agents.color_agent import ColorAgent
     from agents.audio_agent import AudioAgent
     from llm.client import LLMClient
-    from orchestrator.orchestrator import Orchestrator
+    from orchestrator.graph import create_agent_graph
+    from orchestrator.prompt_graph import create_prompt_workflow
+    from orchestrator.sse_manager import SSEConnectionManager
 
     # SSE queue — progress events are pushed here by agents
     sse_q: queue.Queue = queue.Queue()
@@ -104,32 +215,23 @@ def _create_project_context(project_id: str) -> dict:
         api_key=api_key,
     )
 
-    # Build agents with shared config + progress callback
-    agent_config = {
-        **CONFIG,
-        "whisper_model": CONFIG.get("whisper", {}).get("model_size", "base"),
-    }
+    # Use dynamic agent registration from config
+    registry = _register_agents_from_config(state, CONFIG, llm_client, progress_callback)
 
-    transcription_agent = TranscriptionAgent(state, agent_config, progress_callback)
-    search_agent = SearchAgent(state, agent_config, llm_client, progress_callback)
-    edit_agent = EditAgent(state, agent_config, progress_callback)
-    export_agent = ExportAgent(state, agent_config, progress_callback)
-    color_agent = ColorAgent(state, agent_config, progress_callback)
-    audio_agent = AudioAgent(state, agent_config, progress_callback)
-
-    registry = AgentRegistry()
-    registry.register(transcription_agent)
-    registry.register(search_agent)
-    registry.register(edit_agent)
-    registry.register(export_agent)
-    registry.register(color_agent)
-    registry.register(audio_agent)
-
-    orchestrator = Orchestrator(registry, llm_client, state)
+    # Create SSE manager for 2-phase workflow
+    sse_manager = SSEConnectionManager()
+    
+    # Create auto-analysis workflow (for upload)
+    auto_workflow = create_agent_graph(registry, state, CONFIG, sse_manager)
+    
+    # Create prompt workflow (for manual prompts)
+    prompt_workflow = create_prompt_workflow(registry, state, llm_client, CONFIG)
 
     ctx = {
         "state": state,
-        "orchestrator": orchestrator,
+        "auto_workflow": auto_workflow,
+        "prompt_workflow": prompt_workflow,
+        "sse_manager": sse_manager,
         "sse_queue": sse_q,
     }
     _projects[project_id] = ctx
@@ -178,21 +280,76 @@ def upload_video(project_id: str):
             project_id, file.filename, info["duration"],
         )
         
-        # Auto-transcribe in background thread (non-blocking)
-        orchestrator = ctx["orchestrator"]
-        def transcribe_async():
+        # Auto-transcribe and analyze using 2-phase workflow (non-blocking)
+        auto_workflow = ctx["auto_workflow"]
+        sse_manager = ctx["sse_manager"]
+        sse_q = ctx["sse_queue"]
+        
+        def transcribe_and_analyze_async():
+            """
+            2-phase workflow: Transcription → Analysis
+            
+            Phase 1: Transcription (sequential - must complete first)
+            Phase 2: Color + Audio analysis (parallel - need segments from phase 1)
+            
+            Fixes the parallel execution bug where color/audio ran before segments existed.
+            """
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(orchestrator.handle_prompt("transcribe this video"))
+                
+                logger.info("🚀 Starting 2-phase auto-analysis for project %s", project_id)
+                
+                # Execute 2-phase auto-analysis workflow
+                result = loop.run_until_complete(auto_workflow.invoke({
+                    "project_id": project_id,
+                    "prompt": "auto-analysis"
+                }))
+                
+                # Send SSE events from sse_manager to sse_queue
+                # (sse_manager stores events, we need to push them to Flask SSE)
+                for event_dict in sse_manager.get_events_since(project_id, None):
+                    sse_q.put_nowait(json.dumps(event_dict))
+                
+                # Send final completion event
+                if result.get("success"):
+                    logger.info("✓ 2-phase workflow complete for project %s", project_id)
+                    event_data = {
+                        "event": "prompt_done",
+                        "data": {
+                            "success": True,
+                            "summary": result.get("summary", "Auto-analysis complete"),
+                            "transcription_done": result.get("transcription_done", False),
+                            "color_done": result.get("color_done", False),
+                            "audio_done": result.get("audio_done", False),
+                            "segments_count": result.get("segments_count", 0),
+                        }
+                    }
+                else:
+                    logger.error("✗ 2-phase workflow failed for project %s: %s", 
+                               project_id, result.get("error"))
+                    event_data = {
+                        "event": "error",
+                        "data": {
+                            "error": result.get("error", "Unknown error"),
+                            "message": "Auto-analysis failed"
+                        }
+                    }
+                
+                sse_q.put_nowait(json.dumps(event_data))
+                logger.info("📤 Sent final event to SSE queue")
+                
                 loop.close()
-                logger.info("Auto-transcription completed for project %s", project_id)
             except Exception as exc:
-                logger.warning("Auto-transcription failed: %s", exc)
+                logger.exception("Auto-transcription/analysis failed: %s", exc)
+                sse_q.put_nowait(json.dumps({
+                    "event": "error",
+                    "data": {"error": str(exc), "message": "Workflow execution failed"}
+                }))
         
-        transcribe_thread = threading.Thread(target=transcribe_async, daemon=True)
+        transcribe_thread = threading.Thread(target=transcribe_and_analyze_async, daemon=True)
         transcribe_thread.start()
-        logger.info("Started background transcription for project %s", project_id)
+        logger.info("Started background 2-phase workflow for project %s", project_id)
         
         return jsonify({
             "project_id": project_id,
@@ -224,46 +381,43 @@ def handle_prompt(project_id: str):
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
-    orchestrator = ctx["orchestrator"]
+    prompt_workflow = ctx["prompt_workflow"]
     sse_q = ctx["sse_queue"]
 
     # Push start event to SSE
     sse_q.put_nowait(json.dumps({"event": "prompt_start", "data": {"prompt": prompt}}))
 
-    # Run orchestrator in new event loop (Flask runs synchronously)
+    # Run prompt workflow in new event loop (Flask runs synchronously)
     try:
         loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(orchestrator.handle_prompt(prompt))
+        result = loop.run_until_complete(prompt_workflow.invoke({
+            "project_id": project_id,
+            "prompt": prompt
+        }))
         loop.close()
     except Exception as exc:
-        logger.exception("Orchestrator error: %s", exc)
+        logger.exception("Prompt workflow error: %s", exc)
         sse_q.put_nowait(json.dumps({"event": "error", "data": {"error": str(exc)}}))
         return jsonify({"error": str(exc)}), 500
 
+    # Send done event
     sse_q.put_nowait(json.dumps({
         "event": "prompt_done",
         "data": {
-            "success": result.success,
-            "summary": result.summary,
+            "success": result.get("success", False),
+            "summary": result.get("summary", ""),
         },
     }))
-
-    # Extract full_text from tool results if available (for search results)
-    full_text = None
-    for tc in result.tool_calls:
-        if hasattr(tc, 'result') and tc.result and isinstance(tc.result.data, dict):
-            if 'full_text' in tc.result.data:
-                full_text = tc.result.data['full_text']
-                break
+    
+    # Extract results for response
+    results_data = result.get("results", [])
     
     return jsonify({
-        "success": result.success,
-        "prompt": result.prompt,
-        "summary": result.summary,
-        "full_text": full_text,  # Include full text if available
-        "tool_calls": [{"name": tc.name, "params": tc.params} for tc in result.tool_calls],
-        "snap_id": result.snap_id,
-        "error": result.error,
+        "success": result.get("success", False),
+        "prompt": prompt,
+        "summary": result.get("summary", ""),
+        "results": results_data,
+        "error": result.get("error"),
     })
 
 
@@ -288,6 +442,27 @@ def get_timeline(project_id: str):
             continue
         search_layer = state.get_layer("search_agent", entry.segment_id)
         edit_layer = state.get_layer("edit_agent", entry.segment_id)
+        color_layer = state.get_layer("color_agent", entry.segment_id)
+        audio_layer = state.get_layer("audio_agent", entry.segment_id)
+        
+        # Visual features are now per-second arrays from ColorAgent
+        # Remove clip_embedding to reduce payload (not needed in frontend - only for ChromaDB)
+        visual_features = None
+        if color_layer:
+            visual_features = [
+                {k: v for k, v in feat.items() if k != "clip_embedding"}
+                for feat in color_layer
+            ]
+        
+        # Audio features are now per-second arrays from AudioAgent
+        # Remove audio_embedding to reduce payload (not needed in frontend - only for ChromaDB)
+        audio_features = None
+        if audio_layer:
+            audio_features = [
+                {k: v for k, v in feat.items() if k != "audio_embedding"}
+                for feat in audio_layer
+            ]
+        
         gui_segments.append({
             "id": entry.segment_id,
             "start": seg.start,
@@ -306,6 +481,8 @@ def get_timeline(project_id: str):
             "summary": search_layer.get("summary", ""),
             "effects": edit_layer.get("effects", []),
             "trim": edit_layer.get("trim", {}),
+            "visual_features": visual_features,
+            "audio_features": audio_features,
         })
 
     # Include full transcription for display (sorted by start time)
@@ -334,6 +511,11 @@ def get_timeline(project_id: str):
 def sse_stream(project_id: str):
     """
     SSE endpoint — streams agent progress events to the browser.
+    
+    Supports reconnection with checkpoint parameter:
+      /project/{id}/stream?since={checkpoint_id}
+    
+    When 'since' is provided, sends all events after that checkpoint.
 
     Format: text/event-stream with data: {event, data} JSON per event.
     """
@@ -342,9 +524,29 @@ def sse_stream(project_id: str):
         return jsonify({"error": f"Project {project_id} not found"}), 404
 
     sse_q = ctx["sse_queue"]
+    sse_manager = ctx["sse_manager"]
+    
+    # Check for checkpoint parameter (for reconnection)
+    since_checkpoint = request.args.get("since")
 
     def generate() -> Generator[str, None, None]:
+        # Send connection confirmation
         yield "data: {\"event\": \"connected\"}\n\n"
+        
+        # If reconnecting, replay events since checkpoint
+        if since_checkpoint:
+            logger.info("SSE reconnection for project %s from checkpoint %s", project_id, since_checkpoint)
+            try:
+                # Get missed events from SSE manager
+                missed_events = sse_manager.get_events_since(project_id, since_checkpoint)
+                for event_dict in missed_events:
+                    payload = json.dumps(event_dict)
+                    yield f"data: {payload}\n\n"
+                logger.info("Replayed %d missed events", len(missed_events))
+            except Exception as exc:
+                logger.warning("Failed to replay events: %s", exc)
+        
+        # Stream new events
         while True:
             try:
                 payload = sse_q.get(timeout=30)
@@ -410,30 +612,331 @@ def serve_export(project_id: str, filename: str):
     return send_file(str(export_path), mimetype="video/mp4")
 
 
+@app.route("/project/<project_id>/chat/history", methods=["GET"])
+def get_chat_history(project_id: str):
+    """
+    Get conversation history for a project from SqliteSaver.
+    
+    Returns all chat messages stored in checkpoints.db for this project.
+    Useful for restoring conversation on page reload or reconnection.
+    """
+    ctx = _get_project(project_id)
+    if ctx is None:
+        return jsonify({"error": f"Project {project_id} not found"}), 404
+    
+    try:
+        # Access SqliteSaver checkpoints
+        prompt_workflow = ctx["prompt_workflow"]
+        
+        # Get conversation history from checkpoints
+        # LangGraph stores state in checkpoints, we need to extract messages
+        # For now, return from timeline.history which we'll populate with chat summaries
+        state = ctx["state"]
+        history = state.get_history()
+        
+        # Filter to only chat-related entries
+        chat_history = [
+            {
+                "prompt": h.get("prompt", ""),
+                "summary": h.get("summary", ""),
+                "timestamp": h.get("timestamp"),
+                "success": h.get("success", True)
+            }
+            for h in history
+            if h.get("prompt")  # Only include entries with prompts (chat messages)
+        ]
+        
+        return jsonify({
+            "project_id": project_id,
+            "messages": chat_history,
+            "count": len(chat_history)
+        })
+        
+    except Exception as exc:
+        logger.exception("Failed to get chat history: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/project/<project_id>/chat/export", methods=["GET"])
+def export_chat_history(project_id: str):
+    """
+    Export conversation history as JSON file for download.
+    
+    Includes full chat history with timestamps, messages, and results.
+    """
+    ctx = _get_project(project_id)
+    if ctx is None:
+        return jsonify({"error": f"Project {project_id} not found"}), 404
+    
+    try:
+        state = ctx["state"]
+        history = state.get_history()
+        
+        # Build export data
+        export_data = {
+            "project_id": project_id,
+            "export_timestamp": json.dumps({"timestamp": None}),  # Will be set by client
+            "conversation": history,
+            "total_messages": len(history)
+        }
+        
+        # Return as downloadable JSON
+        response = jsonify(export_data)
+        response.headers["Content-Disposition"] = f"attachment; filename=chat_history_{project_id}.json"
+        return response
+        
+    except Exception as exc:
+        logger.exception("Failed to export chat history: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ------------------------------------------------------------------
+# WebSocket handlers for agentic chat
+# ------------------------------------------------------------------
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle WebSocket connection."""
+    logger.info("WebSocket client connected: %s", request.sid)
+    emit('connected', {'message': 'Connected to Wizard chat server'})
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle WebSocket disconnection."""
+    logger.info("WebSocket client disconnected: %s", request.sid)
+
+
+@socketio.on('join_project')
+def handle_join_project(data):
+    """
+    Join a project room for chat.
+    
+    Message format:
+    {
+        "project_id": "abc123"
+    }
+    """
+    project_id = data.get('project_id')
+    
+    if not project_id:
+        emit('error', {'error': 'project_id required'})
+        return
+    
+    # Verify project exists or create it
+    ctx = _get_project(project_id)
+    if ctx is None:
+        ctx = _create_project_context(project_id)
+    
+    # Join Socket.IO room
+    join_room(project_id)
+    logger.info("Client %s joined project %s", request.sid, project_id)
+    
+    emit('joined_project', {
+        'project_id': project_id,
+        'message': f'Joined project {project_id}'
+    })
+
+
+@socketio.on('leave_project')
+def handle_leave_project(data):
+    """Leave a project room."""
+    project_id = data.get('project_id')
+    
+    if not project_id:
+        emit('error', {'error': 'project_id required'})
+        return
+    
+    leave_room(project_id)
+    logger.info("Client %s left project %s", request.sid, project_id)
+    
+    emit('left_project', {'project_id': project_id})
+
+
+@socketio.on('chat_message')
+def handle_chat_message(data):
+    """
+    Handle chat message from client.
+    
+    Message format:
+    {
+        "project_id": "abc123",
+        "message": "trim the first segment",
+        "timestamp": 1234567890
+    }
+    
+    Executes the prompt workflow and streams results via Socket.IO.
+    """
+    project_id = data.get('project_id')
+    message = data.get('message', '').strip()
+    timestamp = data.get('timestamp')
+    
+    if not project_id or not message:
+        emit('error', {'error': 'project_id and message required'})
+        return
+    
+    ctx = _get_project(project_id)
+    if ctx is None:
+        emit('error', {'error': f'Project {project_id} not found'})
+        return
+    
+    logger.info("Chat message from %s in project %s: %s", request.sid, project_id, message)
+    
+    # Echo message back to room (confirmation)
+    socketio.emit('chat_message', {
+        'role': 'user',
+        'content': message,
+        'timestamp': timestamp,
+        'project_id': project_id
+    }, room=project_id)
+    
+    # Send "assistant is thinking" indicator
+    socketio.emit('chat_status', {
+        'status': 'thinking',
+        'project_id': project_id
+    }, room=project_id)
+    
+    # Execute prompt workflow in background thread
+    def execute_chat_prompt():
+        """Execute prompt workflow and send results via WebSocket."""
+        try:
+            prompt_workflow = ctx["prompt_workflow"]
+            
+            # Run workflow
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            result = loop.run_until_complete(prompt_workflow.invoke({
+                "project_id": project_id,
+                "prompt": message
+            }))
+            
+            loop.close()
+            
+            # Send assistant response
+            if result.get("success"):
+                response_message = result.get("summary", "Done!")
+                
+                # Save to timeline history for persistence
+                state = ctx["state"]
+                state.add_history(message, response_message)
+                state.save()
+                
+                socketio.emit('chat_message', {
+                    'role': 'assistant',
+                    'content': response_message,
+                    'timestamp': None,  # Server generates timestamp
+                    'project_id': project_id,
+                    'results': result.get("results", [])
+                }, room=project_id)
+                
+                logger.info("Chat response sent for project %s", project_id)
+            else:
+                # Send error message
+                error_message = result.get("error", "Something went wrong")
+                
+                socketio.emit('chat_message', {
+                    'role': 'assistant',
+                    'content': f"Error: {error_message}",
+                    'timestamp': None,
+                    'project_id': project_id,
+                    'error': True
+                }, room=project_id)
+                
+                logger.error("Chat prompt failed for project %s: %s", project_id, error_message)
+            
+            # Clear thinking status
+            socketio.emit('chat_status', {
+                'status': 'idle',
+                'project_id': project_id
+            }, room=project_id)
+            
+        except Exception as exc:
+            logger.exception("Chat prompt execution error: %s", exc)
+            
+            # Send error to client
+            socketio.emit('chat_message', {
+                'role': 'assistant',
+                'content': f"Error: {str(exc)}",
+                'timestamp': None,
+                'project_id': project_id,
+                'error': True
+            }, room=project_id)
+            
+            socketio.emit('chat_status', {
+                'status': 'idle',
+                'project_id': project_id
+            }, room=project_id)
+    
+    # Start background thread
+    chat_thread = threading.Thread(target=execute_chat_prompt, daemon=True)
+    chat_thread.start()
+
+
 # ------------------------------------------------------------------
 # Model warmup (pre-load models at startup)
 # ------------------------------------------------------------------
 
 def warmup_models():
-    """Pre-load Whisper and sentence-transformers models to avoid first-use delay."""
+    """Pre-load models in parallel at startup for faster initialization."""
     import os
+    import concurrent.futures
+    import time
+    
     # Only warmup in main process, not in reloader subprocess
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        logger.info("Warming up models...")
+        logger.info("Warming up models in parallel...")
+        start_time = time.time()
+        
         try:
             from agents.transcription_agent import _get_whisper, _select_model_size
             from pipeline.vectorizer import _get_model
+            from agents.color_agent import _get_clip_model
+            from utils.device import detect_device
             
-            # Load Whisper model (uses auto-selected size based on RAM)
+            device_config = detect_device()
             model_size = _select_model_size("auto", CONFIG)
-            _get_whisper(model_size)
-            logger.info("✓ Whisper model pre-loaded")
             
-            # Load sentence-transformers model
-            _get_model()
-            logger.info("✓ Sentence-transformers model pre-loaded")
+            # Define loader functions
+            def load_whisper():
+                logger.info("Loading Whisper model (%s)...", model_size)
+                _get_whisper(model_size)
+                logger.info("✓ Whisper model pre-loaded")
+                return "whisper"
             
-            logger.info("Model warmup complete!")
+            def load_embeddings():
+                logger.info("Loading sentence-transformers model...")
+                _get_model()
+                logger.info("✓ Sentence-transformers model pre-loaded")
+                return "embeddings"
+            
+            def load_clip():
+                logger.info("Loading CLIP model...")
+                _get_clip_model(device_config)
+                logger.info("✓ CLIP model pre-loaded (on %s)", device_config.device_type.value.upper())
+                return "clip"
+            
+            # Load all models in parallel using ThreadPoolExecutor
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                # Submit all loads simultaneously
+                futures = {
+                    executor.submit(load_whisper): "Whisper",
+                    executor.submit(load_embeddings): "Embeddings",
+                    executor.submit(load_clip): "CLIP"
+                }
+                
+                # Wait for all to complete
+                for future in concurrent.futures.as_completed(futures):
+                    model_name = futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        logger.error("%s model loading failed: %s", model_name, exc)
+            
+            elapsed = time.time() - start_time
+            logger.info("=" * 70)
+            logger.info("🎉 Model warmup complete! All models ready in %.1fs", elapsed)
+            logger.info("=" * 70)
         except Exception as e:
             logger.warning("Model warmup failed: %s (will lazy-load on first use)", e)
 
@@ -468,4 +971,7 @@ if __name__ == "__main__":
     warmup_models()
     
     logger.info("Auto-reload: File changes will restart the server automatically.")
-    app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=True, threaded=True)
+    logger.info("WebSocket chat endpoint: ws://localhost:%d", port)
+    
+    # Use socketio.run instead of app.run for WebSocket support
+    socketio.run(app, host="0.0.0.0", port=port, debug=debug, use_reloader=True, allow_unsafe_werkzeug=True)

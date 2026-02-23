@@ -133,7 +133,10 @@ def export(
     cmd += ["-c:v", encoder]
     if encoder == "libx264":
         cmd += ["-preset", "fast", "-crf", "22"]
-    elif encoder in ("h264_videotoolbox", "h264_nvenc"):
+    elif encoder == "h264_nvenc":
+        # NVIDIA GPU encoder - use fast preset for speed
+        cmd += ["-preset", "fast", "-b:v", "3M"]  # Lower bitrate for faster encoding
+    elif encoder == "h264_videotoolbox":
         cmd += ["-b:v", "5M"]
 
     # Audio
@@ -248,15 +251,55 @@ def _encoder_available(ffmpeg: str, encoder: str) -> bool:
 
 def _run(cmd: list[str], description: str = "") -> None:
     """Run an FFmpeg command, raise RuntimeError on non-zero exit."""
-    logger.debug("FFmpeg [%s]: %s", description, " ".join(cmd))
+    import time
+    
+    logger.info("=" * 70)
+    logger.info("🎬 FFMPEG COMMAND [%s]:", description)
+    logger.info("=" * 70)
+    
+    # Log full command on one line (copyable)
+    full_cmd = " ".join(cmd)
+    logger.info("COMMAND: %s", full_cmd)
+    
+    # Also log in readable multi-line format
+    logger.info("\nReadable format:")
+    logger.info("  ffmpeg \\")
+    for i, arg in enumerate(cmd[1:], 1):
+        if i < len(cmd) - 1:
+            logger.info("    %s \\", arg)
+        else:
+            logger.info("    %s", arg)
+    logger.info("=" * 70)
+    
+    # Start timing
+    start_time = time.time()
+    start_str = time.strftime("%H:%M:%S")
+    logger.info("🕐 FFMPEG STARTED at %s", start_str)
+    
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=600,  # 10-minute hard limit
     )
+    
+    # End timing
+    end_time = time.time()
+    elapsed = end_time - start_time
+    end_str = time.strftime("%H:%M:%S")
+    
     if result.returncode != 0:
+        logger.error("⏱️ FFMPEG failed after %.2f seconds", elapsed)
+        logger.error("FFmpeg stderr:\n%s", result.stderr[-2000:])
         raise RuntimeError(
             f"FFmpeg failed [{description}]:\n{result.stderr[-2000:]}"
         )
-    logger.debug("FFmpeg [%s] completed.", description)
+    
+    logger.info("=" * 70)
+    logger.info("✅ FFMPEG FINISHED SUCCESSFULLY")
+    logger.info("  Operation: %s", description)
+    logger.info("  Started: %s", start_str)
+    logger.info("  Finished: %s", end_str)
+    logger.info("  ⏱️ Duration: %.2f seconds", elapsed)
+    logger.info("  Exit code: 0")
+    logger.info("=" * 70)

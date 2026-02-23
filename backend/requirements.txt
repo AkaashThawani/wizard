@@ -25,12 +25,21 @@
 # ── Core web server ──────────────────────────────────────────────────────────
 flask>=3.0.0
 flask-cors>=4.0.0
+flask-socketio>=5.3.0
+python-socketio>=5.10.0
 python-dotenv>=1.0.0
 
-# ── LLM providers ───────────────────────────────────────────────────────────
+# ── LLM providers & Orchestration ───────────────────────────────────────────
 anthropic>=0.40.0
 # openai>=1.50.0          # uncomment if using OpenAI provider
-google-generativeai>=0.3.0  # uncomment if using Gemini provider
+google-generativeai>=0.3.0  # for Gemini provider
+
+# LangGraph orchestration framework
+langgraph>=0.2.0           # Agent orchestration with state management (Send API from 0.2.0+)
+langgraph-checkpoint-sqlite>=1.0.0  # SQLite checkpointing for conversation persistence
+langchain-core>=0.1.50     # Core abstractions for LLMs and tools
+langchain-google-genai>=0.0.5  # Google Gemini LangChain integration
+langsmith>=0.1.0           # Observability and tracing (optional but recommended)
 
 # ── Transcription & ML (CPU-compatible, works on all platforms) ──────────────
 # Base packages - platform-independent:
@@ -48,7 +57,7 @@ sentence-transformers>=3.0.0
 chromadb>=0.5.0
 
 # ── Utilities ────────────────────────────────────────────────────────────────
-psutil>=5.9.0  # RAM detection for auto model selection
+psutil>=5.9.0              # RAM detection for auto model selection
 
 # FFmpeg is a system dependency — install separately:
 #   Windows: winget install Gyan.FFmpeg   (or scoop install ffmpeg)

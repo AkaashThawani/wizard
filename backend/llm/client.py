@@ -14,10 +14,14 @@ Zero code changes needed to swap providers.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 from agents.base import Tool, ToolCall
+
+# Module-level logger (so it picks up the configuration from app.py)
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -37,6 +41,14 @@ class LLMClient:
         self.provider = provider
         self.model = model
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+        
+        logger.info("=" * 70)
+        logger.info("🔧 LLM CLIENT INITIALIZED:")
+        logger.info("  Provider: %s", self.provider)
+        logger.info("  Model: %s", self.model)
+        logger.info("  API Key present: %s", bool(self.api_key))
+        logger.info("  Logger name: %s", logger.name)
+        logger.info("=" * 70)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -48,15 +60,34 @@ class LLMClient:
         user: str,
         tools: list[Tool],
         context: dict | None = None,
+        history: list[dict] | None = None,
     ) -> list[ToolCall]:
         """
         Make a single LLM call that returns tool invocations.
 
-        The model reads the system prompt, user message, and available tools,
+        The model reads the system prompt, user message, available tools, and conversation history,
         then returns a list of ToolCall objects (name + params).
+        
+        Args:
+            system: System prompt
+            user: Current user message
+            tools: Available tools
+            context: Timeline context (current_sequence, segment_count, etc.)
+            history: Conversation history [{"role": "user"|"assistant", "content": "..."}]
         """
+        # Add context to user message
         if context:
             user = user + "\n\n<context>\n" + json.dumps(context, indent=2) + "\n</context>"
+        
+        # Add conversation history to user message for context
+        if history and len(history) > 0:
+            history_text = "\n\n<conversation_history>\n"
+            for msg in history[-6:]:  # Last 3 exchanges (6 messages)
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                history_text += f"{role.capitalize()}: {content}\n"
+            history_text += "</conversation_history>"
+            user = history_text + "\n\n" + user
 
         if self.provider == "anthropic":
             return await self._anthropic_tool_call(system, user, tools)
@@ -97,9 +128,28 @@ class LLMClient:
     async def _anthropic_tool_call(
         self, system: str, user: str, tools: list[Tool]
     ) -> list[ToolCall]:
+        logger.info("🔥 _anthropic_tool_call START - function entered")
+        logger.info("  Received %d tools", len(tools))
+        
         import anthropic
+        
+        logger.info("🔥 Creating Anthropic client...")
         client = anthropic.AsyncAnthropic(api_key=self.api_key)
+        
+        logger.info("🔥 Converting tools to Anthropic format...")
         anthropic_tools = self._to_anthropic_tools(tools)
+        logger.info("🔥 Converted to %d Anthropic tools", len(anthropic_tools))
+
+        # LOG REQUEST
+        logger.info("=" * 70)
+        logger.info("🤖 ANTHROPIC LLM REQUEST:")
+        logger.info("  Model: %s", self.model)
+        logger.info("  Tools count: %d", len(anthropic_tools))
+        logger.info("  Tool names: %s", [t["name"] for t in anthropic_tools])
+        logger.info("  Tool choice: any (forced)")
+        logger.info("  System prompt length: %d chars", len(system))
+        logger.info("  User prompt: %s", user[:200])
+        logger.info("=" * 70)
 
         response = await client.messages.create(
             model=self.model,
@@ -107,8 +157,23 @@ class LLMClient:
             system=system,
             tools=anthropic_tools,
             messages=[{"role": "user", "content": user}],
-            tool_choice={"type": "auto"},
+            tool_choice={"type": "any"},  # Force at least one tool call
         )
+
+        # LOG RESPONSE
+        logger.info("=" * 70)
+        logger.info("🤖 ANTHROPIC LLM RESPONSE:")
+        logger.info("  Response content blocks: %d", len(response.content))
+        for i, block in enumerate(response.content):
+            logger.info("  Block %d type: %s", i, block.type)
+            if block.type == "tool_use":
+                logger.info("    Tool name: %s", block.name)
+                logger.info("    Tool params: %s", block.input)
+            elif block.type == "text":
+                logger.info("    Text content: %s", block.text[:200])
+        logger.info("  Stop reason: %s", response.stop_reason)
+        logger.info("  Usage: input=%d, output=%d", response.usage.input_tokens, response.usage.output_tokens)
+        logger.info("=" * 70)
 
         results: list[ToolCall] = []
         for block in response.content:
@@ -169,7 +234,7 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
             tools=openai_tools,
-            tool_choice="auto",
+            tool_choice="required",  # Force at least one tool call
         )
 
         results: list[ToolCall] = []
@@ -221,36 +286,119 @@ class LLMClient:
     async def _gemini_tool_call(
         self, system: str, user: str, tools: list[Tool]
     ) -> list[ToolCall]:
+        logger.info("🔥 _gemini_tool_call START - function entered")
+        logger.info("  Received %d tools", len(tools))
+        
         import google.generativeai as genai
         
+        logger.info("🔥 Configuring Gemini API...")
         genai.configure(api_key=self.api_key)
+        
+        # 1. Setup Tool Config to FORCE a tool call
+        # This prevents the model from returning 0 parts/plain text
+        tool_config = {
+            "function_calling_config": {
+                "mode": "ANY",  # Forces the model to pick at least one tool
+            }
+        }
+        
+        # 2. Setup Generation Config (simple - no thinking in old SDK)
+        generation_config = genai.GenerationConfig(
+            max_output_tokens=8192,
+            temperature=0.3,
+        )
+        
+        # 3. Disable Safety Filters
+        # "Parts: 0" usually means a safety block (e.g., "balls" keyword)
+        safety_settings = [
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        
+        logger.info("🔥 Creating Gemini model...")
         model = genai.GenerativeModel(
             model_name=self.model,
             system_instruction=system,
         )
         
+        logger.info("🔥 Converting tools to Gemini format...")
         gemini_tools = self._to_gemini_tools(tools)
+        logger.info("🔥 Converted to %d Gemini tool declarations", len(gemini_tools))
+        
+        # LOG REQUEST
+        logger.info("=" * 70)
+        logger.info("🤖 GEMINI LLM REQUEST:")
+        logger.info("  Model: %s", self.model)
+        logger.info("  Tools count: %d", len(tools))
+        logger.info("  Tool names: %s", [t.name for t in tools])
+        logger.info("  System prompt length: %d chars", len(system))
+        logger.info("  User prompt: %s", user[:200])
+        logger.info("  Tool config: function_calling_config.mode = ANY (forced)")
+        logger.info("  Safety filters: DISABLED (all categories)")
+        logger.info("=" * 70)
         
         # Gemini expects a combined prompt (system is set in GenerativeModel)
+        logger.info("🔥 Calling Gemini API...")
         response = await model.generate_content_async(
             user,
             tools=gemini_tools,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=4096,
-                temperature=1.0,
-            ),
+            tool_config=tool_config,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
         )
+        
+        # DEBUG: If response is blocked, find out why
+        if not response.candidates or not response.candidates[0].content.parts:
+            logger.error("=" * 70)
+            logger.error("❌ GEMINI RETURNED NO PARTS")
+            if response.candidates:
+                # This will tell you if it was SAFETY, RECITATION, or OTHER
+                logger.error(f"  Finish Reason: {response.candidates[0].finish_reason}")
+                logger.error(f"  Safety Ratings: {response.candidates[0].safety_ratings}")
+            logger.error("=" * 70)
+            return []
+        
+        # LOG RESPONSE
+        logger.info("=" * 70)
+        logger.info("🤖 GEMINI LLM RESPONSE:")
+        logger.info("  Candidates: %d", len(response.candidates) if response.candidates else 0)
+        if response.candidates:
+            for i, candidate in enumerate(response.candidates):
+                logger.info("  Candidate %d:", i)
+                logger.info("    Finish reason: %s", candidate.finish_reason if hasattr(candidate, 'finish_reason') else 'N/A')
+                if hasattr(candidate.content, 'parts'):
+                    logger.info("    Parts: %d", len(candidate.content.parts))
+                    for j, part in enumerate(candidate.content.parts):
+                        # Capture internal reasoning/thinking
+                        if hasattr(part, 'thought') and part.thought:
+                            logger.info("    Part %d: 💭 THOUGHT:", j)
+                            logger.info("      %s", part.text[:500] if hasattr(part, 'text') and part.text else "")
+                        
+                        # Capture actual tool calls
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            logger.info("    Part %d: 🛠️ TOOL CALL - %s", j, part.function_call.name)
+                            logger.info("      Args: %s", {k: v for k, v in part.function_call.args.items()} if part.function_call.args else {})
+                        
+                        # Capture text responses
+                        elif hasattr(part, 'text') and part.text:
+                            logger.info("    Part %d: 🤖 TEXT RESPONSE:", j)
+                            logger.info("      %s", part.text[:500] if len(part.text) > 500 else part.text)
+        logger.info("=" * 70)
         
         results: list[ToolCall] = []
         
-        # Check if model wants to call functions
+        # Parse Parts (including Thoughts and Function Calls)
         if response.candidates and len(response.candidates) > 0:
             candidate = response.candidates[0]
             if hasattr(candidate.content, 'parts'):
                 for part in candidate.content.parts:
+                    # Capture actual tool calls
                     if hasattr(part, 'function_call') and part.function_call:
                         fc = part.function_call
-                        params = dict(fc.args) if fc.args else {}
+                        # Convert MapComposite to standard dict
+                        params = {k: v for k, v in fc.args.items()} if fc.args else {}
                         depends_on = params.pop("depends_on", [])
                         if isinstance(depends_on, str):
                             depends_on = [depends_on]

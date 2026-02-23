@@ -106,7 +106,11 @@ class CustomInstall(install):
     """Custom installation to handle GPU-specific packages."""
     
     def run(self):
-        # Detect GPU
+        print("\n" + "="*70)
+        print("🚀 STARTING CUSTOM GPU-AWARE INSTALLATION")
+        print("="*70)
+        
+        # Detect GPU FIRST
         device_type = detect_gpu()
         
         print("\n" + "="*70)
@@ -114,59 +118,116 @@ class CustomInstall(install):
         print("="*70)
         
         # Install base dependencies first
-        print("\n1️⃣  Installing base dependencies...")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install",
-            "--upgrade", "pip", "setuptools", "wheel"
-        ])
+        print("\n1️⃣  Upgrading pip, setuptools, wheel...")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install",
+                "--upgrade", "pip", "setuptools", "wheel"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            print("✓ Base tools upgraded")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  Warning: Could not upgrade pip: {e}")
         
         # Install PyTorch with appropriate backend
         print(f"\n2️⃣  Installing PyTorch for {device_type.upper()}...")
+        print("    (This may take a few minutes...)")
         torch_cmd = [sys.executable, "-m", "pip", "install"] + get_torch_packages(device_type)
-        subprocess.check_call(torch_cmd)
+        try:
+            subprocess.check_call(torch_cmd)
+            print(f"✓ PyTorch installed for {device_type.upper()}")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install PyTorch: {e}")
+            raise
         
         # Install ONNX Runtime
         print(f"\n3️⃣  Installing ONNX Runtime for {device_type.upper()}...")
         onnx_package = get_onnx_package(device_type)
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", onnx_package
-        ])
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", onnx_package
+            ])
+            print(f"✓ ONNX Runtime installed: {onnx_package}")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install ONNX Runtime: {e}")
+            raise
         
         # Install other dependencies
         print("\n4️⃣  Installing other dependencies...")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install",
-            "-r", os.path.join(os.path.dirname(__file__), "requirements_base.txt")
-        ])
+        requirements_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements_base.txt")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install",
+                "-r", requirements_file
+            ])
+            print("✓ All other dependencies installed")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to install requirements: {e}")
+            raise
         
-        # Verify installation
+        # Fix onnxruntime conflict (chromadb installs CPU version)
+        if device_type == "cuda":
+            print("\n4️⃣b Fixing onnxruntime conflict...")
+            print("    (Replacing CPU version with GPU version)")
+            try:
+                # Uninstall CPU version if it exists
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "uninstall", "-y", "onnxruntime"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                
+                # Reinstall GPU version to ensure it's correct
+                onnx_package = get_onnx_package(device_type)
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", "--force-reinstall", onnx_package
+                ])
+                print("✓ ONNX Runtime conflict resolved (GPU version only)")
+            except subprocess.CalledProcessError:
+                print("⚠️  Warning: Could not fix onnxruntime conflict")
+        
+        # Run standard install (copy package files)
+        print("\n5️⃣  Installing wizard-backend package...")
+        install.run(self)
+        print("✓ Package files installed")
+        
+        # Verify installation AFTER everything
         print("\n" + "="*70)
         print("✅ VERIFYING INSTALLATION...")
         print("="*70)
         
         try:
             import torch
-            print(f"✓ PyTorch: {torch.__version__}")
+            print(f"\n✓ PyTorch: {torch.__version__}")
             print(f"✓ CUDA available: {torch.cuda.is_available()}")
             if torch.cuda.is_available():
                 print(f"✓ CUDA device: {torch.cuda.get_device_name(0)}")
+                print(f"✓ CUDA version: {torch.version.cuda}")
             
             import onnxruntime as ort
+            providers = ort.get_available_providers()
+            print(f"\n✓ ONNX Runtime: {ort.__version__}")
             print(f"✓ ONNX Runtime providers:")
-            for p in ort.get_available_providers():
-                print(f"    - {p}")
+            for i, p in enumerate(providers, 1):
+                print(f"    {i}. {p}")
             
-            print("\n🎉 Installation complete! All packages installed successfully.")
+            # Check for GPU providers
+            has_gpu = any(p in ['CUDAExecutionProvider', 'TensorrtExecutionProvider'] for p in providers)
+            if has_gpu:
+                print("\n🎉 GPU ACCELERATION ENABLED!")
+            else:
+                print("\n⚠️  Warning: No GPU providers found in ONNX Runtime")
+                print("    Whisper will use PyTorch CUDA, but missing ONNX GPU acceleration")
+            
+            print("\n" + "="*70)
+            print("🎉 INSTALLATION COMPLETE!")
+            print("="*70)
             print("\nNext steps:")
-            print("  1. Run: python app.py")
-            print("  2. Upload a video and test GPU acceleration")
+            print("  1. Verify: python check_gpu.py")
+            print("  2. Start server: python app.py")
+            print("  3. Upload a video and test GPU acceleration!")
+            print("="*70)
             
         except Exception as e:
             print(f"\n⚠️  Warning: Could not verify installation: {e}")
-            print("Try running: python check_gpu.py")
-        
-        # Run standard install
-        install.run(self)
+            print("Run this to verify: python check_gpu.py")
 
 
 # Read base requirements (without torch/onnxruntime)

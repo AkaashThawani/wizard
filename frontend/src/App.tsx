@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from './api/client';
 import type { TimelineData } from './types/api';
+import { useSSE, type SSEEvent } from './hooks/useSSE';
+import { useWebSocket } from './hooks/useWebSocket';
+import { ChatInterface } from './components/ChatInterface';
 import './App.css';
 
 function App() {
@@ -19,105 +22,163 @@ function App() {
   const [currentSourceTime, setCurrentSourceTime] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [pendingExportDownload, setPendingExportDownload] = useState<string | null>(null);
-  const [currentVideoIndex, setCurrentVideoIndex] = useState(0); // 0 or 1 for double buffer
-  const [currentSegmentIndex, setCurrentSegmentIndex] = useState(0);
+  const [currentVideoIndex] = useState(0); // 0 or 1 for double buffer (reserved for future use)
   const videoRef = useRef<HTMLVideoElement>(null);
   const video2Ref = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  
+  // WebSocket connection for chat - listen for assistant responses to refresh timeline
+  const { messages: chatMessages } = useWebSocket(projectId || undefined);
+  
+  // Refresh timeline when assistant sends a message (chat completed)
+  useEffect(() => {
+    if (chatMessages.length > 0) {
+      const lastMessage = chatMessages[chatMessages.length - 1];
+      console.log('[App] Chat message received:', {
+        role: lastMessage.role,
+        error: lastMessage.error,
+        contentLength: lastMessage.content?.length
+      });
+      
+      if (lastMessage.role === 'assistant' && !lastMessage.error) {
+        console.log('[App] Chat completed, refreshing timeline');
+        loadTimeline()
+          .then(() => {
+            console.log('[App] Timeline refresh complete, setting progress=Done');
+            setProgress('Done'); // Mark as complete so timeline renders
+          })
+          .catch(err => {
+            console.error('[App] Timeline refresh failed:', err);
+          });
+      }
+    }
+  }, [chatMessages]);
 
   // Load timeline
   const loadTimeline = async () => {
     if (!projectId) return;
     try {
+      console.log('[App] Loading timeline for project:', projectId);
       const data = await api.getTimeline(projectId);
       setTimeline(data);
+      console.log('[App] Timeline loaded successfully:', data.current_sequence.length, 'segments');
+      
+      // Set progress to 'Done' if we have segments (fixes page refresh issue)
+      if (data.current_sequence && data.current_sequence.length > 0) {
+        setProgress('Done');
+      }
+      
+      return data; // Return data for promise chaining
     } catch (err) {
       console.error('Failed to load timeline:', err);
       // Clear stale project on error
       localStorage.removeItem('wizard_project_id');
       setProjectId(null);
       setTimeline(null);
+      throw err; // Re-throw for error handling
     }
   };
 
-  // SSE connection
-  useEffect(() => {
-    if (!projectId) return;
-
-    const sse = api.createSSE(projectId);
-    
-    sse.onmessage = (event) => {
-      try {
-        const { event: eventName, data } = JSON.parse(event.data);
-        if (eventName === 'prompt_done') {
-          loadTimeline();
-          
-          // Handle export failures
-          if (pendingExportDownload && !data.success) {
-            setResponse(`Export failed: ${data.error || 'Unknown error'}`);
-            setProgress('Failed');
-            setIsExporting(false);
-            setPendingExportDownload(null);
-          } else {
-            setProgress('Done');
-          }
-        } else if (eventName === 'stage') {
-          setProgress(`${data.stage}: ${data.status}`);
-          
-          // Refresh timeline when vectorization completes
-          if (data.stage === 'vectorize' && data.status === 'done') {
-            loadTimeline();
-            setProgress('Done');
-          }
-          
-          // Trigger download when export completes
-          if (data.stage === 'encode' && data.status === 'done' && pendingExportDownload) {
-            const downloadExport = async () => {
-              try {
-                setProgress('Downloading...');
-                const downloadUrl = `/project/${projectId}/export/export_preview.mp4`;
-                const response = await fetch(downloadUrl);
-                
-                if (!response.ok) {
-                  throw new Error(`Download failed: ${response.statusText}`);
-                }
-                
-                const blob = await response.blob();
-                const blobUrl = URL.createObjectURL(blob);
-                
-                // Create download link
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = `wizard_export_${new Date().getTime()}.mp4`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                
-                // Clean up
-                URL.revokeObjectURL(blobUrl);
-                
-                setProgress('Done');
-                setResponse(`Export downloaded: ${data.file_size_mb || '?'} MB`);
-              } catch (err) {
-                setResponse(`Download error: ${err}`);
-                setProgress('Failed');
-              } finally {
-                setPendingExportDownload(null);
-                setIsExporting(false);
-              }
-            };
-            downloadExport();
-          }
+  // SSE connection with auto-reconnection (only when projectId exists)
+  useSSE({
+    projectId: projectId || 'none', // Use placeholder to prevent empty string
+    onEvent: (event: SSEEvent) => {
+      const { event: eventName, data } = event;
+      
+      if (eventName === 'prompt_done') {
+        loadTimeline();
+        
+        // Handle export failures
+        if (pendingExportDownload && !data.success) {
+          setResponse(`Export failed: ${data.error || 'Unknown error'}`);
+          setProgress('Failed');
+          setIsExporting(false);
+          setPendingExportDownload(null);
+          // Restore timeline after 2 seconds
+          setTimeout(() => setProgress('Done'), 2000);
+        } else {
+          setProgress('Done');
         }
-      } catch (e) {
-        // Ignore
+      } else if (eventName === 'stage') {
+        setProgress(`${data.stage}: ${data.status}`);
+        
+        // Refresh timeline when vectorization completes
+        if (data.stage === 'vectorize' && data.status === 'done') {
+          loadTimeline();
+          setProgress('Done');
+        }
+        
+        // Trigger download when export completes
+        if (data.stage === 'encode' && data.status === 'done' && pendingExportDownload) {
+          const downloadExport = async () => {
+            try {
+              setProgress('Downloading...');
+              const downloadUrl = `/project/${projectId}/export/export_preview.mp4`;
+              const response = await fetch(downloadUrl);
+              
+              if (!response.ok) {
+                throw new Error(`Download failed: ${response.statusText}`);
+              }
+              
+              const blob = await response.blob();
+              const blobUrl = URL.createObjectURL(blob);
+              
+              // Create download link
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              a.download = `wizard_export_${new Date().getTime()}.mp4`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              
+              // Clean up
+              URL.revokeObjectURL(blobUrl);
+              
+              setProgress('Done');
+              setResponse(`Export downloaded: ${data.file_size_mb || '?'} MB`);
+            } catch (err) {
+              setResponse(`Download error: ${err}`);
+              setProgress('Failed');
+            } finally {
+              setPendingExportDownload(null);
+              setIsExporting(false);
+            }
+          };
+          downloadExport();
+        }
+      }
+    },
+    onError: (error) => {
+      console.error('[SSE] Connection error:', error);
+    }
+  });
+
+  // Validate project on mount - sync localStorage with state
+  useEffect(() => {
+    const validateStoredProject = async () => {
+      const storedId = localStorage.getItem('wizard_project_id');
+      
+      // If localStorage has a project but state doesn't, validate it
+      if (storedId && !projectId) {
+        try {
+          console.log('[App] Validating stored project:', storedId);
+          await api.getTimeline(storedId);
+          // Project exists, sync state with localStorage
+          setProjectId(storedId);
+          console.log('[App] Project validated and restored:', storedId);
+        } catch (err) {
+          console.warn('[App] Stored project invalid, clearing:', err);
+          // Project doesn't exist, clear localStorage
+          localStorage.removeItem('wizard_project_id');
+          setProjectId(null);
+        }
       }
     };
+    
+    validateStoredProject();
+  }, []); // Run once on mount
 
-    return () => sse.close();
-  }, [projectId, pendingExportDownload]);
-
-  // Initial load
+  // Load timeline when projectId changes
   useEffect(() => {
     if (projectId) loadTimeline();
   }, [projectId]);
@@ -154,7 +215,14 @@ function App() {
       setProjectId(project.project_id);
       localStorage.setItem('wizard_project_id', project.project_id);
       setTimeline(null);
+      setVideoBlobUrl(null); // Clear old video
       setResponse(`Created project: ${project.project_id}`);
+      if (videoRef.current) {
+        videoRef.current.src = '';
+      }
+      if (video2Ref.current) {
+        video2Ref.current.src = '';
+      }
     } catch (err) {
       setResponse(`Error: ${err}`);
     }
@@ -164,11 +232,15 @@ function App() {
     localStorage.removeItem('wizard_project_id');
     setProjectId(null);
     setTimeline(null);
+    setVideoBlobUrl(null); // Clear video blob URL
     setResponse('');
     setPrompt('');
     setProgress('Ready');
     if (videoRef.current) {
       videoRef.current.src = '';
+    }
+    if (video2Ref.current) {
+      video2Ref.current.src = '';
     }
   };
 
@@ -579,43 +651,29 @@ function App() {
         </div>
 
         <div className="sidebar">
-          <div className="prompt-section">
-            <h3>Prompt</h3>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. find mentions of machine learning"
-              rows={4}
-            />
-            <button
-              onClick={handleSendPrompt}
-              disabled={isLoading}
-              className="btn-primary"
-            >
-              {isLoading ? 'Processing...' : 'Send'}
-            </button>
+          {/* Chat Interface - replaces old prompt/response */}
+          <div className="chat-panel">
+            <ChatInterface projectId={projectId} />
           </div>
-
-          <details open className="panel">
-            <summary>Response</summary>
-            <div className="content">{response || 'No response yet'}</div>
-          </details>
 
           <details className="panel">
             <summary>Transcription</summary>
             <div className="content transcription-list">
-              {timeline?.transcription.map(seg => (
-                <div
-                  key={seg.id}
-                  className="trans-item"
-                  onClick={() => handleSegmentClick(seg.start)}
-                >
-                  <div className="trans-time">
-                    [{Math.floor(seg.start/60)}:{(seg.start%60).toFixed(1)} - {Math.floor(seg.end/60)}:{(seg.end%60).toFixed(1)}]
+              {timeline?.transcription
+                .filter(seg => seg.text && seg.text.trim().length > 0)  // Filter out silent segments
+                .map(seg => (
+                  <div
+                    key={seg.id}
+                    className="trans-item"
+                    onClick={() => handleSegmentClick(seg.start)}
+                  >
+                    <div className="trans-time">
+                      [{Math.floor(seg.start/60)}:{(seg.start%60).toFixed(1)} - {Math.floor(seg.end/60)}:{(seg.end%60).toFixed(1)}]
+                    </div>
+                    <div>{seg.text}</div>
                   </div>
-                  <div>{seg.text}</div>
-                </div>
-              ))}
+                ))
+              }
             </div>
           </details>
 

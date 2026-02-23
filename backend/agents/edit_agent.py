@@ -329,7 +329,7 @@ class EditAgent(BaseAgent):
         if not segment_id:
             return ToolResult(success=False, data={}, error="segment_id is required")
 
-        seg = self.state.get_segment(segment_id)
+        seg = self.state.get_effective_segment(segment_id)
         if seg is None:
             return ToolResult(success=False, data={}, error=f"Segment {segment_id} not found")
 

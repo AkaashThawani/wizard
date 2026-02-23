@@ -46,6 +46,7 @@ class Segment:
     speaker: str | None
     source: str                    # path to source file
     chroma_id: str = ""            # populated by vectorizer
+    is_silent: bool = False        # True for non-speech segments
 
 
 # ---------------------------------------------------------------------------
@@ -110,12 +111,12 @@ class HistoryEntry:
 
 class TimelineEncoder(json.JSONEncoder):
     """JSON encoder that handles Enum members and nested dataclasses."""
-    def default(self, obj: Any) -> Any:
-        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-            return dataclasses.asdict(obj)
-        if isinstance(obj, (EffectType, TransitionType)):
-            return obj.value
-        return super().default(obj)
+    def default(self, o: Any) -> Any:
+        if dataclasses.is_dataclass(o) and not isinstance(o, type):
+            return dataclasses.asdict(o)
+        if isinstance(o, (EffectType, TransitionType)):
+            return o.value
+        return super().default(o)
 
 
 def segment_to_dict(seg: Segment) -> dict:
@@ -135,6 +136,7 @@ def segment_from_dict(d: dict) -> Segment:
         speaker=d.get("speaker"),
         source=d["source"],
         chroma_id=d.get("chroma_id", ""),
+        is_silent=d.get("is_silent", False),
     )
 
 

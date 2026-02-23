@@ -37,9 +37,7 @@ class ExportAgent(BaseAgent):
             Tool(
                 name="export.export",
                 description=(
-                    "Export the current timeline to an MP4 file. "
-                    "resolution='preview' exports at 720p (fast); "
-                    "resolution='full' exports at source resolution. "
+                    "Export the current timeline to an MP4 file at source resolution. "
                     "Returns the path of the exported file."
                 ),
                 parameters={
@@ -47,8 +45,8 @@ class ExportAgent(BaseAgent):
                     "properties": {
                         "resolution": {
                             "type": "string",
-                            "enum": ["full", "preview"],
-                            "description": "Output resolution (default: preview)",
+                            "enum": ["full"],
+                            "description": "Output resolution (always full/source resolution)",
                         },
                         "output_name": {
                             "type": "string",
@@ -68,7 +66,7 @@ class ExportAgent(BaseAgent):
         if name != "export.export":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
-        resolution = params.get("resolution", "preview")
+        resolution = params.get("resolution", "full")  # Default to full resolution
         output_name = params.get("output_name", "export")
 
         try:
@@ -88,7 +86,56 @@ class ExportAgent(BaseAgent):
                 error="Current sequence is empty. Nothing to export.",
             )
 
+        # Log export start
+        logger.info("=" * 70)
+        logger.info("🚀 EXPORT STARTED")
+        logger.info("  Resolution: %s", resolution)
+        logger.info("  Output name: %s", output_name)
+        logger.info("  Segments to export: %d", len(sequence))
+        logger.info("=" * 70)
+
+        # Log sequence details before export
+        logger.info("=" * 70)
+        logger.info("EXPORT: Exporting %d clips from current_sequence", len(sequence))
+        logger.info("RAW SEQUENCE TYPE: %s", type(sequence))
+        logger.info("RAW SEQUENCE DATA: %s", sequence)
+        
+        segment_pool = self.state._data["segment_pool"]
+        logger.info("RAW SEGMENT_POOL TYPE: %s", type(segment_pool))
+        logger.info("RAW SEGMENT_POOL KEYS: %s", list(segment_pool.keys()) if hasattr(segment_pool, 'keys') else 'N/A')
+        
+        for i, entry in enumerate(sequence, 1):
+            logger.info("  Entry %d TYPE: %s", i, type(entry))
+            logger.info("  Entry %d DATA: %s", i, entry)
+            
+            seg = segment_pool.get(entry.segment_id if hasattr(entry, 'segment_id') else entry.get('segment_id'))
+            logger.info("  Segment TYPE: %s", type(seg))
+            logger.info("  Segment DATA: %s", seg)
+            
+            if seg:
+                # Handle both dict and object access
+                if isinstance(seg, dict):
+                    start = seg.get('start', 0)
+                    end = seg.get('end', 0)
+                    duration = seg.get('duration', 0)
+                    text = seg.get('text', '')
+                else:
+                    start = seg.start
+                    end = seg.end
+                    duration = seg.duration
+                    text = seg.text
+                    
+                logger.info(
+                    "  [%d] %s: %.2fs-%.2fs (duration=%.2fs) - %s",
+                    i, entry.segment_id if hasattr(entry, 'segment_id') else entry.get('segment_id'),
+                    start, end, duration, text[:50] if text else ""
+                )
+        logger.info("=" * 70)
+
         self._emit("stage", {"stage": "compile", "status": "running"})
+        
+        logger.info("📊 COMPILING TIMELINE...")
+        logger.info("  Building FFmpeg filter_complex from %d segments", len(sequence))
 
         # Build FFmpeg arguments from timeline state
         compiled = effect_compiler.compile(
@@ -96,6 +143,10 @@ class ExportAgent(BaseAgent):
             layers=self.state._data["layers"],
             segment_pool=self.state._data["segment_pool"],
         )
+
+        logger.info("✓ COMPILATION COMPLETE")
+        logger.info("  Inputs prepared: %d", len(compiled["inputs"]))
+        logger.info("  Filter complex length: %d chars", len(compiled.get("filter_complex", "")))
 
         if not compiled["inputs"]:
             return ToolResult(
@@ -117,10 +168,14 @@ class ExportAgent(BaseAgent):
             "encoder": encoder,
             "segments": len(compiled["inputs"]),
         })
-        logger.info(
-            "Exporting %d segments @ %s using %s → %s",
-            len(compiled["inputs"]), resolution, encoder, output_path,
-        )
+        
+        logger.info("=" * 70)
+        logger.info("🎬 STARTING FFMPEG ENCODING")
+        logger.info("  Encoder: %s", encoder)
+        logger.info("  Resolution: %s", resolution)
+        logger.info("  Output: %s", output_path)
+        logger.info("  Segments: %d", len(compiled["inputs"]))
+        logger.info("=" * 70)
 
         ffmpeg_wrapper.export(
             inputs=compiled["inputs"],
@@ -133,9 +188,16 @@ class ExportAgent(BaseAgent):
         )
 
         self._emit("stage", {"stage": "encode", "status": "done", "output": output_path})
-        logger.info("Export complete: %s", output_path)
-
+        
         file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+        
+        logger.info("=" * 70)
+        logger.info("✅ EXPORT COMPLETE!")
+        logger.info("  Output: %s", output_path)
+        logger.info("  File size: %.2f MB", file_size / (1024 * 1024))
+        logger.info("  Segments: %d", len(compiled["inputs"]))
+        logger.info("=" * 70)
+        
         return ToolResult(
             success=True,
             data={

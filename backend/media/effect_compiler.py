@@ -197,12 +197,14 @@ def _build_segment_filters(
     if v_filters:
         v_chain = f"{v_in}{','.join(v_filters)}{v_label}"
     else:
-        v_chain = f"{v_in}copy{v_label}"
+        # Use 'null' filter for passthrough (copy/acopy don't exist!)
+        v_chain = f"{v_in}null{v_label}"
 
     if a_filters:
         a_chain = f"{a_in}{','.join(a_filters)}{a_label}"
     else:
-        a_chain = f"{a_in}acopy{a_label}"
+        # Use 'anull' filter for audio passthrough
+        a_chain = f"{a_in}anull{a_label}"
 
     return v_chain, a_chain
 
@@ -226,10 +228,27 @@ def _build_transitions(
     if len(video_labels) == 1:
         return [], video_labels[0], audio_labels[0]
 
-    # Group segments: if a segment has a crossfade transition_in,
-    # use xfade; otherwise use concat.
-    # For simplicity in v1: detect crossfade blocks and use xfade there,
-    # then concat everything else.
+    # Precompute actual durations for each segment
+    durations = []
+    for entry in sequence:
+        seg = segment_pool.get(entry.segment_id)
+        if seg is None:
+            durations.append(0.0)
+            continue
+            
+        edit = edit_layers.get(entry.segment_id, {})
+        trim = edit.get("trim", {})
+
+        seg_start = seg["start"]
+        seg_end = seg["end"]
+
+        trim_start = trim.get("start") or 0.0
+        trim_end = trim.get("end")
+
+        actual_start = seg_start + trim_start
+        actual_end = seg_end - trim_end if trim_end is not None else seg_end
+
+        durations.append(actual_end - actual_start)
 
     # Build a list of (v_label, a_label, transition_in) for each segment
     entries_with_labels = []
@@ -240,7 +259,9 @@ def _build_transitions(
             entry.transition_in,
         ))
 
-    # Simple approach: concat all segments respecting xfade where specified
+    # Track cumulative timeline duration
+    timeline_duration = durations[0]
+    
     current_v = entries_with_labels[0][0]
     current_a = entries_with_labels[0][1]
     merge_idx = 0
@@ -261,12 +282,19 @@ def _build_transitions(
             d = transition.duration_s
             # xfade for video, acrossfade for audio
             xfade_mode = "dissolve" if transition.type == TransitionType.DISSOLVE else "fade"
+            
+            # CRITICAL FIX: Compute correct offset based on timeline duration
+            offset = max(0.0, timeline_duration - d)
+            
             filter_lines.append(
-                f"{current_v}{v2}xfade=transition={xfade_mode}:duration={d}:offset=0{out_v}"
+                f"{current_v}{v2}xfade=transition={xfade_mode}:duration={d}:offset={offset:.3f}{out_v}"
             )
             filter_lines.append(
                 f"{current_a}{a2}acrossfade=d={d}{out_a}"
             )
+            
+            # Update timeline: new_length = prev_length + next_length - transition_duration
+            timeline_duration = timeline_duration + durations[i] - d
         else:
             # Plain cut — concat
             filter_lines.append(
@@ -275,6 +303,9 @@ def _build_transitions(
             filter_lines.append(
                 f"{current_a}{a2}concat=n=2:v=0:a=1{out_a}"
             )
+            
+            # Update timeline: just add next segment duration
+            timeline_duration += durations[i]
 
         current_v = out_v
         current_a = out_a

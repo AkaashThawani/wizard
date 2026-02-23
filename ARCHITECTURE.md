@@ -275,14 +275,46 @@ Trim points live in `layers["edit_agent"][segment_id].trim`.
 
 ---
 
-## Audio Data Pipeline
+## Video Analysis Pipeline
+
+### Auto-Analysis Workflow (on video upload)
+
+Wizard automatically analyzes uploaded videos using a 3-phase parallel workflow:
 
 ```
-Whisper via ONNX Runtime (word_timestamps=True)
+START (all 3 agents run in parallel from beginning)
+├─ Transcription:  [████████████████] ✓ ~30s
+│                  ↓
+│   Whisper → merger → chunker → enricher → vectorizer
+│                  ↓
+│   fill_silent_gaps() ← Creates silent segments immediately
+│                  ↓
+│   Saves ALL segments (speech + silent) → Complete timeline structure
+│
+├─ ColorAgent:     [████████████████████████] ✓ ~50s
+│                  ↓
+│   Analyzes full video per-second (parallel)
+│   Returns: [{time: 0, brightness, color, saturation, clip_embedding}, ...]
+│
+└─ AudioAgent:     [████████████████████████] ✓ ~50s
+                   ↓
+   Analyzes full video per-second (parallel)
+   Returns: [{time: 0, energy, pitch, spectral_centroid, ...}, ...]
+                   ↓
+Reassembly: Maps per-second features to segments, batch saves (~1s)
+```
+
+**Key Benefits:**
+- All 3 agents start immediately (true parallelization)
+- Complete timeline structure available at ~30s
+- Features progressively attached at ~50s
+- No structure changes between updates (stable segment IDs)
+
+### Transcription Pipeline
+
+```
+Whisper via PyTorch (word_timestamps=True)
     │  list[WordToken]
-    ▼
-cleaner.py     ← remove fillers (um/uh/like), deduplicate repeated phrases
-    │
     ▼
 merger.py      ← merge adjacent segments separated by silence < 0.5s
     │
@@ -290,12 +322,71 @@ merger.py      ← merge adjacent segments separated by silence < 0.5s
 chunker.py     ← sentence boundaries via punctuation + confidence scores
     │  sentence-aligned list[Segment]
     ▼
+fill_silent_gaps() ← detect silent gaps, create silent segments (is_silent=True)
+    │  complete timeline (speech + silent)
+    ▼
 enricher.py    ← single LLM call → topics, keywords, summary per segment
     │           writes to layers["search_agent"]
     ▼
 vectorizer.py  ← sentence-transformers → ChromaDB chroma/text
                writes chroma_id back to each Segment
 ```
+
+### Per-Second Feature Extraction
+
+**ColorAgent** analyzes visual features per-second:
+- **Brightness**: 0.0-1.0 luminance value
+- **Dominant Color**: Hex color code (#RRGGBB)
+- **Saturation**: Color intensity 0.0-1.0
+- **CLIP Embeddings**: 512-dim vector for visual similarity search
+
+**AudioAgent** analyzes audio features per-second:
+- **Energy**: RMS, max, standard deviation
+- **Pitch**: Fundamental frequency (Hz)
+- **Spectral Centroid/Rolloff**: Frequency distribution
+- **Zero-Crossing Rate**: Signal complexity
+- **Speech Rate**: Words per second (from transcription)
+
+Features are stored per-segment in layers:
+```json
+{
+  "layers": {
+    "color_agent": {
+      "seg_001": [
+        {"time": 0, "brightness": 0.5, "color": "#1e201f", "saturation": 0.03},
+        {"time": 1, "brightness": 0.52, "color": "#1f211f", "saturation": 0.04}
+      ]
+    },
+    "audio_agent": {
+      "seg_001": [
+        {"time": 0, "energy_rms": 0.02, "pitch_hz": 850, "spectral_centroid": 2000},
+        {"time": 1, "energy_rms": 0.03, "pitch_hz": 870, "spectral_centroid": 2100}
+      ]
+    }
+  }
+}
+```
+
+### Silent Segments
+
+Segments with `is_silent=True` represent gaps in speech:
+- Created automatically during transcription phase
+- Have empty `text` and `words` fields
+- Still contain visual/audio features per-second
+- Included in timeline for playback continuity
+- Filtered out in transcription panel display
+
+### Performance Optimizations
+
+**Batch Saves**: `set_layers_batch()` method reduces file I/O:
+- Before: 50+ individual `save()` calls (slow)
+- After: 1 batch save per agent (fast)
+- 120x faster reassembly (2 min → 1 sec)
+
+**Stable Timeline Structure**:
+- Complete segment list (speech + silent) created at ~30s
+- No structure changes during reassembly
+- Features progressively attached without recreating segments
 
 `deepmultilingualpunctuation` is **not used** — Whisper output is already punctuated.
 

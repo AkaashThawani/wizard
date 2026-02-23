@@ -1,4 +1,5 @@
 {
+  "use_two_phase_workflow": true,
   "llm": {
     "provider": "gemini",
     "model": "gemini-2.5-flash"
@@ -14,13 +15,13 @@
       "auto_run": true
     },
     "color": {
-      "enabled": false,
-      "auto_analyze": false,
+      "enabled": true,
+      "auto_analyze": true,
       "model": "openai/clip-vit-base-patch32"
     },
     "audio": {
-      "enabled": false,
-      "auto_analyze": false
+      "enabled": true,
+      "auto_analyze": true
     },
     "search": {
       "enabled": true

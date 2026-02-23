@@ -308,6 +308,15 @@ body {
   flex-direction: column;
 }
 
+.chat-panel {
+  flex: 1;
+  min-height: 400px;
+  max-height: 60vh;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
 .prompt-section {
   padding: 12px;
   border-bottom: 1px solid var(--border);

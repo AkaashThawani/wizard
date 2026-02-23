@@ -47,7 +47,7 @@ _INTENT_RULES: list[tuple[str, str]] = [
 
     # Audio features
     (r"\b(loud|quiet|energy|pitch|speech.rate|fast speech|slow speech)\b", "audio_agent"),
-    (r"\b(audio.feature|sound.level|volume.level)\b", "audio_agent"),
+    (r"\b(audio.features?|sound.level|volume.level|analyze.audio)\b", "audio_agent"),
 ]
 
 _COMPILED_RULES: list[tuple[re.Pattern, str]] = [
