@@ -10,10 +10,10 @@
 # 2. GPU acceleration (OPTIONAL - platform-specific, not required):
 #    
 #    Windows/Linux with NVIDIA GPU:
-#      pip install onnxruntime-gpu torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#      pip install torch>=2.5.0 torchvision>=0.20.0 onnxruntime-gpu --index-url https://download.pytorch.org/whl/cu121
 #    
 #    Mac Apple Silicon (M1/M2/M3):
-#      pip install torch torchvision
+#      pip install torch>=2.5.0 torchvision>=0.20.0
 #    
 #    CPU only:
 #      Nothing needed - already included in requirements.txt!
@@ -46,7 +46,7 @@ langsmith>=0.1.0           # Observability and tracing (optional but recommended
 # ── Transcription & ML (CPU-compatible, works on all platforms) ──────────────
 # Base packages - platform-independent:
 optimum[onnxruntime]>=1.14.0  # ONNX Runtime (CPU version) - cross-platform
-transformers>=4.30.0
+transformers>=4.46.0  # Updated for PyTorch 2.6+ compatibility and safetensors support
 
 # NOTE: For GPU acceleration, see installation instructions at top of file.
 # ONNX Runtime automatically uses: CUDA (Windows/Linux) → CoreML (Mac) → CPU

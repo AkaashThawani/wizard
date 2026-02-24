@@ -39,7 +39,7 @@ async def test_audio():
     agent = AudioAgent(state, config, progress_callback)
     
     print("\nRunning AudioAgent...")
-    result = await agent.execute_tool("audio.analyze", {})
+    result = await agent.execute_tool("audio_analyze", {})
     
     print(f"\nResult: {result.success}")
     print(f"Data: {result.data}")

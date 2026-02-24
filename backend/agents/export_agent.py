@@ -35,7 +35,7 @@ class ExportAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="export.export",
+                name="export_export",
                 description=(
                     "Export the current timeline to an MP4 file at source resolution. "
                     "Returns the path of the exported file."
@@ -59,11 +59,11 @@ class ExportAgent(BaseAgent):
         ]
 
     async def run(self, params: dict) -> AgentStatus:
-        result = await self.execute_tool("export.export", params)
+        result = await self.execute_tool("export_export", params)
         return AgentStatus.SUCCESS if result.success else AgentStatus.FAILED
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
-        if name != "export.export":
+        if name != "export_export":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         resolution = params.get("resolution", "full")  # Default to full resolution

@@ -13,7 +13,7 @@ google-generativeai>=0.3.0
 
 # ── ML & NLP (excluding torch/onnxruntime) ───────────────────────────────────
 optimum[onnxruntime]>=1.14.0  # ONNX Runtime integration (cross-platform)
-transformers>=4.30.0
+transformers>=4.46.0  # Updated for PyTorch 2.6+ compatibility and safetensors support
 sentence-transformers>=3.0.0
 
 # ── Vector database ──────────────────────────────────────────────────────────

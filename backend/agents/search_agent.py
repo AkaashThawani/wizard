@@ -68,7 +68,7 @@ class SearchAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="search.find_segments",
+                name="search_find_segments",
                 description=(
                     "Find transcript segments that match a natural-language query. "
                     "Returns a list of segment IDs ordered by relevance. "
@@ -93,11 +93,11 @@ class SearchAgent(BaseAgent):
         ]
 
     async def run(self, params: dict) -> AgentStatus:
-        result = await self.execute_tool("search.find_segments", params)
+        result = await self.execute_tool("search_find_segments", params)
         return AgentStatus.SUCCESS if result.success else AgentStatus.FAILED
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
-        if name != "search.find_segments":
+        if name != "search_find_segments":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         query = params.get("query", "").strip()

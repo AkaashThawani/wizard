@@ -1,8 +1,8 @@
 {
   "use_two_phase_workflow": true,
   "llm": {
-    "provider": "gemini",
-    "model": "gemini-2.5-flash"
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514"
   },
   "device": {
     "cuda_enabled": true,

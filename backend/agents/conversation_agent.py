@@ -29,7 +29,7 @@ class ConversationAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="conversation.talk_user",
+                name="conversation_talk_user",
                 description=(
                     "Respond conversationally to the user. "
                     "Use this when the user is greeting you, thanking you, "
@@ -50,11 +50,11 @@ class ConversationAgent(BaseAgent):
         ]
 
     async def run(self, params: dict) -> AgentStatus:
-        result = await self.execute_tool("conversation.talk_user", params)
+        result = await self.execute_tool("conversation_talk_user", params)
         return AgentStatus.SUCCESS if result.success else AgentStatus.FAILED
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
-        if name != "conversation.talk_user":
+        if name != "conversation_talk_user":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         message = params.get("message", "").strip()

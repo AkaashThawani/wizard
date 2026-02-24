@@ -98,18 +98,40 @@ def _get_whisper(model_size: str = "small", force_cpu: bool = False):
             providers = ["CPUExecutionProvider"]
             logger.info("Loading Whisper ONNX model '%s' on CPU (FORCED)...", model_size)
         else:
-            # Use detected providers (CUDA → CoreML → CPU)
-            providers = device_config.onnx_providers
-            logger.info("Loading Whisper ONNX model '%s'...", model_size)
+            # FORCE CUDA FOR WHISPER ONLY (override CPU-only mode from device.py)
+            # Check if CUDA is actually available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                    logger.info("Loading Whisper ONNX model '%s' with CUDA...", model_size)
+                    logger.info("  GPU: %s", torch.cuda.get_device_name(0))
+                else:
+                    providers = ["CPUExecutionProvider"]
+                    logger.info("Loading Whisper ONNX model '%s' on CPU (CUDA not available)...", model_size)
+            except Exception:
+                providers = ["CPUExecutionProvider"]
+                logger.info("Loading Whisper ONNX model '%s' on CPU (fallback)...", model_size)
+            
             logger.info("  Execution providers: %s", providers)
-            if device_config.gpu_name:
-                logger.info("  GPU: %s (%.1f GB)", device_config.gpu_name, device_config.gpu_memory_gb)
+        
+        # Check for local ONNX model first
+        import os
+        local_model_path = os.path.join(os.path.dirname(__file__), "..", "models", f"whisper-{model_size}-onnx")
+        
+        if os.path.exists(local_model_path):
+            logger.info("  Using local ONNX model from: %s", local_model_path)
+            model_id = local_model_path
+            export_flag = False  # Already in ONNX format
+        else:
+            logger.info("  Local model not found, will download and convert: %s", model_id)
+            export_flag = True
         
         try:
             # Load ONNX model with optimum
             ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(
                 model_id,
-                export=True,  # Export to ONNX if not cached
+                export=export_flag,  # Only export if not local
                 provider=providers[0],  # Primary provider
             )
             
@@ -150,8 +172,8 @@ def _get_whisper(model_size: str = "small", force_cpu: bool = False):
             if not force_cpu and "CPUExecutionProvider" not in providers:
                 logger.warning("Falling back to CPUExecutionProvider...")
                 ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(
-                    model_id,
-                    export=True,
+                    model_id if not os.path.exists(local_model_path) else local_model_path,
+                    export=export_flag,
                     provider="CPUExecutionProvider",
                 )
                 processor = AutoProcessor.from_pretrained(model_id)
@@ -248,7 +270,7 @@ class TranscriptionAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="transcription.transcribe",
+                name="transcription_transcribe",
                 description=(
                     "Transcribe the project's source video using Whisper via ONNX Runtime. "
                     "Automatically selects best model size based on available RAM. "
@@ -279,7 +301,7 @@ class TranscriptionAgent(BaseAgent):
         return AgentStatus.SUCCESS if result.success else AgentStatus.FAILED
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
-        if name != "transcription.transcribe":
+        if name != "transcription_transcribe":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         source_path = self.state.source_path

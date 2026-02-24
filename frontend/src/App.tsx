@@ -604,7 +604,7 @@ function App() {
           </div>
           {timeline?.current_sequence && timeline.current_sequence.length > 0 && progress === 'Done' ? (
             <div className="timeline-container" ref={timelineRef}>
-              {/* Hidden range input - handles all dragging logic */}
+              {/* Hiddren range input - handles all dragging logic */}
               <input
                 type="range"
                 min={0}

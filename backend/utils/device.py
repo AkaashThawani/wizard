@@ -169,50 +169,25 @@ def get_onnx_providers(cuda_enabled: bool = True) -> list[str]:
     """
     Get ordered list of ONNX Runtime providers based on availability.
     
-    Checks onnxruntime.get_available_providers() and returns prioritized list.
-    Falls back gracefully if GPU providers unavailable.
+    FORCED CPU-ONLY MODE: Always returns CPU provider to avoid CUDA 13.0/12.1 mismatch.
     
     Args:
-        cuda_enabled: Whether to include CUDA providers in priority list
+        cuda_enabled: Whether to include CUDA providers in priority list (IGNORED - always CPU)
     
     Returns:
-        Ordered list of ONNX provider strings (highest priority first)
+        Ordered list of ONNX provider strings (CPU only)
     
     Example:
         >>> providers = get_onnx_providers(cuda_enabled=True)
-        >>> # ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        >>> # ['CPUExecutionProvider']
     """
-    try:
-        import onnxruntime as ort
-        available = set(ort.get_available_providers())
-        logger.debug("Available ONNX providers: %s", available)
-    except ImportError:
-        logger.warning("onnxruntime not installed, falling back to CPU")
-        return [ONNXProvider.CPU.value]
+    # FORCE CPU ONLY - CUDA 13.0 driver incompatible with CUDA 12.1 binaries
+    logger.info("⚠️  FORCED CPU-ONLY MODE: GPU execution disabled due to CUDA version mismatch")
+    logger.info("   Your system: CUDA 13.0 (driver 581.15)")
+    logger.info("   Required: CUDA 12.1 (for PyTorch/ONNX binaries)")
+    logger.info("   Using CPU for all models (safe, reliable, fast enough)")
     
-    providers = []
-    
-    if cuda_enabled:
-        # Priority for NVIDIA systems: CUDA > CPU (TensorRT removed - requires separate install)
-        if ONNXProvider.CUDA.value in available:
-            providers.append(ONNXProvider.CUDA.value)
-    else:
-        # Priority for non-CUDA systems: CoreML > DirectML > CPU
-        if ONNXProvider.COREML.value in available:
-            providers.append(ONNXProvider.COREML.value)
-        if ONNXProvider.DIRECTML.value in available:
-            providers.append(ONNXProvider.DIRECTML.value)
-    
-    # Always include CPU as fallback
-    if ONNXProvider.CPU.value in available:
-        providers.append(ONNXProvider.CPU.value)
-    
-    if not providers:
-        logger.warning("No ONNX providers found, using default CPU")
-        providers = [ONNXProvider.CPU.value]
-    
-    logger.debug("Selected ONNX providers (in priority order): %s", providers)
-    return providers
+    return [ONNXProvider.CPU.value]
 
 
 def get_torch_device() -> str:

@@ -42,7 +42,7 @@ class AudioAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="audio.analyze",
+                name="audio_analyze",
                 description=(
                     "Analyse audio features of specified segments. "
                     "Extracts energy, pitch, and speech rate features stored in "
@@ -61,7 +61,7 @@ class AudioAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="audio.reanalyze_segment",
+                name="audio_reanalyze_segment",
                 description=(
                     "Re-analyze audio features of a specific segment. "
                     "Useful after edits (trim, effects) to get updated audio analysis. "
@@ -81,7 +81,7 @@ class AudioAgent(BaseAgent):
         ]
 
     async def run(self, params: dict) -> AgentStatus:
-        result = await self.execute_tool("audio.analyze", params)
+        result = await self.execute_tool("audio_analyze", params)
         return AgentStatus.SUCCESS if result.success else AgentStatus.FAILED
 
     async def analyze_full_video(self) -> list[dict]:
@@ -162,10 +162,10 @@ class AudioAgent(BaseAgent):
             }
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
-        if name == "audio.reanalyze_segment":
+        if name == "audio_reanalyze_segment":
             return await self._reanalyze_segment_tool(params)
         
-        if name != "audio.analyze":
+        if name != "audio_analyze":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         try:

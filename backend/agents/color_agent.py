@@ -1,7 +1,7 @@
 """
 agents/color_agent.py
 
-ColorAgent — visual analysis using CLIP embeddings.
+ColorAgent — visual analysis using CLIP embeddings via ONNX Runtime.
 
 Extracts keyframes from video segments and generates CLIP embeddings
 for visual similarity search and color analysis.
@@ -21,7 +21,7 @@ import numpy as np
 from agents.base import BaseAgent, Tool, ToolResult, AgentStatus
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Re-enable INFO for debugging
+logger.setLevel(logging.INFO)
 
 # Lazy model cache
 _clip_model = None
@@ -31,50 +31,52 @@ _clip_lock = threading.Lock()
 
 
 def _get_clip_model(device_config=None):
-    """Load CLIP model with GPU acceleration if available."""
+    """Load CLIP model via raw ONNX Runtime (no Optimum wrapper)."""
     global _clip_model, _clip_processor, _clip_device
     
     # Thread-safe model loading: only first thread loads, others wait
     with _clip_lock:
         if _clip_model is None:
             try:
-                import torch
-                from transformers import CLIPProcessor, CLIPModel
+                import onnxruntime as ort
+                from transformers import CLIPProcessor
                 from utils.device import detect_device
                 
                 if device_config is None:
                     device_config = detect_device()
                 
-                # Determine device
-                if device_config.device_type.value == "cuda" and torch.cuda.is_available():
-                    device = "cuda:0"
-                    torch_dtype = torch.float16
-                    logger.info("Loading CLIP model on GPU (CUDA)...")
-                elif device_config.device_type.value == "mps" and torch.backends.mps.is_available():
-                    device = "mps"
-                    torch_dtype = torch.float16
-                    logger.info("Loading CLIP model on Apple Silicon (MPS)...")
-                else:
-                    device = "cpu"
-                    torch_dtype = torch.float32
-                    logger.info("Loading CLIP model on CPU...")
-                
-                # Get model name from config
                 model_name = "openai/clip-vit-base-patch32"
+                providers = device_config.onnx_providers
                 
-                # Use safetensors version (refs/pr/66) for compatibility with PyTorch < 2.6
-                revision = "refs/pr/66"
+                logger.info("Loading CLIP model via raw ONNX Runtime...")
+                logger.info("  Model: %s", model_name)
+                logger.info("  Providers: %s", providers)
                 
-                # Load CLIP model and processor
-                _clip_model = CLIPModel.from_pretrained(
-                    model_name, 
-                    revision=revision,
-                    use_safetensors=True
-                ).to(device).to(torch_dtype)
-                _clip_processor = CLIPProcessor.from_pretrained(model_name, revision=revision)
-                _clip_device = device
+                # Check for local ONNX model first
+                import os
+                local_path = os.path.join(os.path.dirname(__file__), "..", "models", "clip-vit-base-patch32-onnx", "onnx", "model.onnx")
                 
-                logger.info("✓ CLIP model loaded successfully on %s", device)
+                if os.path.exists(local_path):
+                    logger.info("  Using local ONNX model from: %s", local_path)
+                    onnx_path = local_path
+                else:
+                    logger.error("  Local ONNX model not found at: %s", local_path)
+                    raise FileNotFoundError(f"CLIP ONNX model not found at {local_path}")
+                
+                # Load ONNX model with raw ONNX Runtime (no Optimum wrapper)
+                _clip_model = ort.InferenceSession(
+                    onnx_path,
+                    providers=providers if providers else ["CPUExecutionProvider"]
+                )
+                
+                # Load processor
+                _clip_processor = CLIPProcessor.from_pretrained(model_name)
+                _clip_device = providers[0] if providers else "CPUExecutionProvider"
+                
+                logger.info("✓ CLIP model loaded successfully via raw ONNX Runtime")
+                logger.info("  Active provider: %s", _clip_device)
+                logger.info("  Model inputs: %s", [inp.name for inp in _clip_model.get_inputs()])
+                logger.info("  Model outputs: %s", [out.name for out in _clip_model.get_outputs()])
                 
             except Exception as e:
                 logger.exception("Failed to load CLIP model: %s", e)
@@ -85,7 +87,7 @@ def _get_clip_model(device_config=None):
 
 class ColorAgent(BaseAgent):
     """
-    Visual analysis agent using CLIP embeddings.
+    Visual analysis agent using CLIP embeddings via ONNX Runtime.
     
     Capabilities:
     - Extract keyframes from video segments
@@ -100,7 +102,7 @@ class ColorAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="color.analyze",
+                name="color_analyze",
                 description=(
                     "Analyse the visual content of specified segments. "
                     "Extracts keyframes and generates CLIP embeddings stored in "
@@ -120,7 +122,7 @@ class ColorAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="color.reanalyze_segment",
+                name="color_reanalyze_segment",
                 description=(
                     "Re-analyze visual content of a specific segment. "
                     "Useful after edits (trim, effects) to get updated visual analysis. "
@@ -140,7 +142,7 @@ class ColorAgent(BaseAgent):
         ]
 
     async def run(self, params: dict) -> AgentStatus:
-        result = await self.execute_tool("color.analyze", params)
+        result = await self.execute_tool("color_analyze", params)
         return AgentStatus.SUCCESS if result.success else AgentStatus.FAILED
 
     async def analyze_full_video(self) -> list[dict]:
@@ -224,10 +226,10 @@ class ColorAgent(BaseAgent):
                     pass
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
-        if name == "color.reanalyze_segment":
+        if name == "color_reanalyze_segment":
             return await self._reanalyze_segment_tool(params)
         
-        if name != "color.analyze":
+        if name != "color_analyze":
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         try:
@@ -325,15 +327,25 @@ class ColorAgent(BaseAgent):
             if success and os.path.exists(keyframe_path):
                 return keyframe_path
             else:
-                logger.warning("Failed to extract keyframe at %.2fs", timestamp)
+                logger.error("❌ FFmpeg frame extraction failed:")
+                logger.error("  Video: %s", video_path)
+                logger.error("  Video exists: %s", os.path.exists(video_path))
+                logger.error("  Timestamp: %.2fs", timestamp)
+                logger.error("  Target path: %s", keyframe_path)
+                logger.error("  File was created: %s", os.path.exists(keyframe_path))
                 return None
                 
         except Exception as e:
-            logger.error("Keyframe extraction error: %s", e)
+            logger.error("❌ Keyframe extraction exception:")
+            logger.error("  Error: %s", e)
+            logger.error("  Video: %s", video_path)
+            logger.error("  Timestamp: %.2fs", timestamp)
+            import traceback
+            logger.error("  Traceback: %s", traceback.format_exc())
             return None
     
     def _analyze_image(self, image_path: str) -> dict:
-        """Analyze image with CLIP and extract visual features."""
+        """Analyze image with CLIP via ONNX Runtime and extract visual features."""
         import torch
         
         # Load CLIP model
@@ -342,15 +354,49 @@ class ColorAgent(BaseAgent):
         # Load and process image
         image = Image.open(image_path).convert("RGB")
         
-        # Get CLIP embedding
-        inputs = processor(images=image, return_tensors="pt").to(device)
+        # CLIP ONNX model requires BOTH image and text inputs
+        # Process image to get pixel_values
+        image_inputs = processor(images=image, return_tensors="pt")
         
-        with torch.no_grad():
-            if device == "cuda:0":
-                inputs = {k: v.half() for k, v in inputs.items()}
-            image_features = model.get_image_features(**inputs)
-            # Extract tensor from BaseModelOutputWithPooling
-            embedding = image_features[0].cpu().numpy().tolist()
+        # Process dummy text (empty string) to get input_ids and attention_mask
+        # This satisfies the ONNX model's requirement for text inputs
+        text_inputs = processor(text=[""], return_tensors="pt", padding=True)
+        
+        # Merge both inputs (pixel_values + input_ids + attention_mask)
+        inputs = {**image_inputs, **text_inputs}
+        
+        # Raw ONNX inference using session.run()
+        try:
+            # Convert PyTorch tensors to numpy for ONNX
+            onnx_inputs = {}
+            for key, value in inputs.items():
+                if hasattr(value, 'numpy'):
+                    onnx_inputs[key] = value.numpy()
+                else:
+                    onnx_inputs[key] = value
+            
+            # Run inference
+            output_names = [out.name for out in model.get_outputs()]
+            outputs = model.run(output_names, onnx_inputs)
+            
+            # Extract embedding from raw ONNX outputs
+            # CLIP outputs: [logits_per_image, logits_per_text, text_embeds, image_embeds]
+            # We want image_embeds which is at index 3
+            if len(outputs) >= 4:
+                embedding = outputs[3]  # image_embeds at index 3
+                logger.debug("Using image_embeds (outputs[3]) from CLIP")
+            else:
+                raise RuntimeError(f"Expected 4 outputs from CLIP, got {len(outputs)}")
+            
+            # Convert to list (embedding is already numpy array)
+            if len(embedding.shape) > 1:
+                # If shape is (1, 512), squeeze to (512,)
+                embedding = embedding.squeeze()
+            embedding = embedding.tolist()
+            
+        except Exception as e:
+            logger.error("❌ CLIP inference failed: %s", e)
+            raise
         
         # Analyze color properties
         img_array = np.array(image)

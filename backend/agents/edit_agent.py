@@ -17,6 +17,7 @@ Tools:
 
 from __future__ import annotations
 
+import json
 import logging
 from agents.base import BaseAgent, Tool, ToolResult, AgentStatus
 from timeline.models import SequenceEntry, Transition, Effect, edit_layer_to_dict, edit_layer_from_dict, EditLayer
@@ -38,7 +39,7 @@ class EditAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="edit.keep_only",
+                name="edit_keep_only",
                 description=(
                     "Replace the current sequence with only the specified segments. "
                     "All other segments remain in the pool but are excluded from the edit. "
@@ -55,10 +56,10 @@ class EditAgent(BaseAgent):
                     },
                     "required": ["segment_ids"],
                 },
-                depends_on=["search.find_segments"],
+                depends_on=["search_find_segments"],
             ),
             Tool(
-                name="edit.remove_short",
+                name="edit_remove_short",
                 description=(
                     "Remove all segments from the current sequence whose duration "
                     "is less than min_duration_s seconds."
@@ -75,7 +76,7 @@ class EditAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="edit.reorder",
+                name="edit_reorder",
                 description=(
                     "Reorder the current sequence to match the given segment ID order. "
                     "All specified IDs must already be in the current sequence."
@@ -93,7 +94,7 @@ class EditAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="edit.set_transition",
+                name="edit_set_transition",
                 description=(
                     "Set the transition that plays before a segment. "
                     "type must be one of: cut, crossfade, dissolve."
@@ -119,7 +120,7 @@ class EditAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="edit.trim_segment",
+                name="edit_trim_segment",
                 description=(
                     "Trim the start or end of a segment. "
                     "start_offset: seconds to cut from the beginning. "
@@ -143,11 +144,17 @@ class EditAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="edit.add_effect",
+                name="edit_add_effect",
                 description=(
-                    "Add a non-destructive effect to a segment. "
-                    "effect_type: volume | fade_in | fade_out | mute | caption | speed | crop. "
-                    "params depends on effect_type (e.g. {level: 0.8} for volume)."
+                    "Add a non-destructive effect to a segment.\n\n"
+                    "Effect types and their required params:\n"
+                    "  - speed: {factor: float} — Speed multiplier (e.g. {factor: 1.5} for 1.5x speed, {factor: 2.0} for 2x)\n"
+                    "  - volume: {level: float} — Volume level 0.0-1.0 (e.g. {level: 0.8} for 80% volume)\n"
+                    "  - fade_in: {duration_s: float} — Fade in duration in seconds (default 0.5)\n"
+                    "  - fade_out: {duration_s: float} — Fade out duration in seconds (default 0.5)\n"
+                    "  - crop: {x: int, y: int, w: int, h: int} — Crop coordinates and dimensions\n"
+                    "  - caption: {text: string} — Text to display as caption\n"
+                    "  - mute: {} — Mute audio (no params needed)"
                 ),
                 parameters={
                     "type": "object",
@@ -159,7 +166,7 @@ class EditAgent(BaseAgent):
                         },
                         "params": {
                             "type": "object",
-                            "description": "Effect parameters (varies by type)",
+                            "description": "Effect parameters (see description for required fields per effect type)",
                         },
                     },
                     "required": ["segment_id", "effect_type"],
@@ -173,12 +180,12 @@ class EditAgent(BaseAgent):
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
         dispatch = {
-            "edit.keep_only": self._keep_only,
-            "edit.remove_short": self._remove_short,
-            "edit.reorder": self._reorder,
-            "edit.set_transition": self._set_transition,
-            "edit.trim_segment": self._trim_segment,
-            "edit.add_effect": self._add_effect,
+            "edit_keep_only": self._keep_only,
+            "edit_remove_short": self._remove_short,
+            "edit_reorder": self._reorder,
+            "edit_set_transition": self._set_transition,
+            "edit_trim_segment": self._trim_segment,
+            "edit_add_effect": self._add_effect,
         }
         handler = dispatch.get(name)
         if handler is None:
@@ -363,6 +370,15 @@ class EditAgent(BaseAgent):
         segment_id = params.get("segment_id")
         effect_type_str = params.get("effect_type")
         effect_params = params.get("params", {})
+        
+        # Fix: Parse JSON string params (LLMs sometimes send params as string)
+        if isinstance(effect_params, str):
+            try:
+                effect_params = json.loads(effect_params)
+                logger.debug("Parsed effect params from JSON string: %s", effect_params)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse effect params as JSON, using empty dict")
+                effect_params = {}
 
         if not segment_id:
             return ToolResult(success=False, data={}, error="segment_id is required")

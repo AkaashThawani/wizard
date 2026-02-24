@@ -3,7 +3,7 @@ pipeline/vectorizer.py
 
 Converts segment text into embeddings and stores them in ChromaDB.
 
-Model: sentence-transformers/all-MiniLM-L6-v2 (~80 MB, CPU-friendly, cross-platform)
+Model: sentence-transformers/all-MiniLM-L6-v2 (~80 MB) via ONNX Runtime
 Lazy loading: model loads on first call, cached in module-level variable.
 
 Collection: chroma/text (one per project, stored on disk in projects/{id}/chroma/text/)
@@ -11,21 +11,158 @@ Collection: chroma/text (one per project, stored on disk in projects/{id}/chroma
 
 from __future__ import annotations
 
+import logging
+import numpy as np
 from pathlib import Path
 from timeline.models import Segment
 
+logger = logging.getLogger(__name__)
+
 # Module-level model cache (lazy loaded on first use)
-_sentence_model = None
+_embedding_model = None
+_tokenizer = None
 
 
 def _get_model():
-    global _sentence_model
-    if _sentence_model is None:
-        from sentence_transformers import SentenceTransformer
-        print("Loading sentence-transformers model (first use)...")
-        _sentence_model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("sentence-transformers model loaded.")
-    return _sentence_model
+    """
+    Load sentence embedding model via ONNX Runtime (cross-platform).
+    
+    Uses optimum.onnxruntime like Whisper for consistent device handling.
+    """
+    global _embedding_model, _tokenizer
+    
+    if _embedding_model is None:
+        from optimum.onnxruntime import ORTModelForFeatureExtraction
+        from transformers import AutoTokenizer
+        from utils.device import detect_device
+        
+        model_id = "sentence-transformers/all-MiniLM-L6-v2"
+        device_config = detect_device()
+        providers = device_config.onnx_providers
+        
+        logger.info("Loading sentence embedding model via ONNX Runtime...")
+        logger.info("  Model: %s", model_id)
+        logger.info("  Providers: %s", providers)
+        logger.info("  Note: Will auto-convert to ONNX on first use (~2 sec, then cached)")
+        
+        try:
+            # Load ONNX model (auto-converts and caches on first use)
+            _embedding_model = ORTModelForFeatureExtraction.from_pretrained(
+                model_id,
+                export=True,  # Convert to ONNX (fast, ~2 sec) - caches for future runs
+                provider=providers[0] if providers else "CPUExecutionProvider",
+            )
+            
+            # Load tokenizer
+            _tokenizer = AutoTokenizer.from_pretrained(model_id)
+            
+            logger.info("✓ Sentence embedding model loaded via ONNX Runtime")
+            logger.info("  Active provider: %s", providers[0] if providers else "CPU")
+            
+        except Exception as e:
+            logger.error("Failed to load embedding model via ONNX, trying CPU fallback: %s", e)
+            try:
+                # Fallback to CPU
+                _embedding_model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_id,
+                    export=True,
+                    provider="CPUExecutionProvider",
+                )
+                _tokenizer = AutoTokenizer.from_pretrained(model_id)
+                logger.info("✓ Loaded embedding model on CPU (fallback)")
+            except Exception as e2:
+                logger.exception("Failed to load embedding model even on CPU: %s", e2)
+                raise
+    
+    return _embedding_model, _tokenizer
+
+
+def _encode_texts(texts: list[str]) -> list[list[float]]:
+    """
+    Encode texts to embeddings using ONNX model.
+    
+    Returns list of embeddings (each embedding is a list of floats).
+    """
+    import torch
+    
+    model, tokenizer = _get_model()
+    
+    # Tokenize
+    inputs = tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+        max_length=512,
+    )
+    
+    # Get embeddings from ONNX model
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    # Mean pooling (same as sentence-transformers)
+    # Take mean of all token embeddings (excluding padding)
+    attention_mask = inputs["attention_mask"]
+    token_embeddings = outputs.last_hidden_state
+    
+    # Expand attention mask to match token_embeddings dimensions
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    
+    # Sum embeddings and divide by number of tokens (mean pooling)
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+    embeddings = sum_embeddings / sum_mask
+    
+    # Normalize embeddings (L2 norm)
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    
+    # Convert to list
+    return embeddings.cpu().numpy().tolist()
+
+
+def _encode_texts_cpu(texts: list[str]) -> list[list[float]]:
+    """
+    Encode texts to embeddings using CPU-only ONNX model (fallback for GPU errors).
+    
+    Returns list of embeddings (each embedding is a list of floats).
+    """
+    import torch
+    from optimum.onnxruntime import ORTModelForFeatureExtraction
+    from transformers import AutoTokenizer
+    
+    model_id = "sentence-transformers/all-MiniLM-L6-v2"
+    
+    # Load model on CPU
+    model = ORTModelForFeatureExtraction.from_pretrained(
+        model_id,
+        export=True,
+        provider="CPUExecutionProvider",
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    
+    # Tokenize
+    inputs = tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+        max_length=512,
+    )
+    
+    # Get embeddings
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    # Mean pooling
+    attention_mask = inputs["attention_mask"]
+    token_embeddings = outputs.last_hidden_state
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+    sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+    embeddings = sum_embeddings / sum_mask
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    
+    return embeddings.cpu().numpy().tolist()
 
 
 def vectorize_segments(
@@ -59,8 +196,6 @@ def vectorize_segments(
     print(f"  Existing vectors: {existing_count}")
     print(f"  Collection path: {state.chroma_dir / 'text'}")
 
-    model = _get_model()
-
     # Encode all texts in one batch (efficient)
     texts = [seg.text for seg in segments]
     ids = [seg.id for seg in segments]
@@ -70,8 +205,37 @@ def vectorize_segments(
     for i, seg in enumerate(segments[:3], 1):
         print(f"  [{i}] ID={seg.id}, text='{seg.text[:100]}'")
 
-    print(f"🧮 Generating embeddings for {len(segments)} segments...")
-    embeddings = model.encode(texts, show_progress_bar=False).tolist()
+    print(f"🧮 Generating embeddings for {len(segments)} segments via ONNX...")
+    print(f"  Using batch processing (16 segments at a time) to avoid GPU memory issues...")
+    
+    # Process in batches to avoid CUDA memory errors
+    embeddings = []
+    batch_size = 16
+    total_batches = (len(texts) + batch_size - 1) // batch_size
+    
+    for batch_idx in range(0, len(texts), batch_size):
+        batch_texts = texts[batch_idx:batch_idx + batch_size]
+        batch_num = (batch_idx // batch_size) + 1
+        
+        try:
+            print(f"  Processing batch {batch_num}/{total_batches} ({len(batch_texts)} segments)...")
+            batch_embeddings = _encode_texts(batch_texts)
+            embeddings.extend(batch_embeddings)
+        except RuntimeError as e:
+            if "CUDA" in str(e) or "illegal memory" in str(e):
+                logger.warning("CUDA error in batch %d, retrying on CPU...", batch_num)
+                print(f"  ⚠️  GPU error in batch {batch_num}, falling back to CPU...")
+                try:
+                    # Force CPU for this batch
+                    batch_embeddings = _encode_texts_cpu(batch_texts)
+                    embeddings.extend(batch_embeddings)
+                    print(f"  ✓ Batch {batch_num} completed on CPU")
+                except Exception as cpu_err:
+                    logger.error("CPU fallback also failed for batch %d: %s", batch_num, cpu_err)
+                    raise
+            else:
+                raise
+    
     print(f"✓ Generated {len(embeddings)} embeddings (dim={len(embeddings[0]) if embeddings else 0})")
 
     # Build metadata for ChromaDB
@@ -145,11 +309,9 @@ def similarity_search(
         print("❌ ChromaDB collection is EMPTY!")
         print("  No vectors to search. Vectorization may have failed.")
         return []
-    
-    model = _get_model()
 
-    print("🧮 Encoding query...")
-    query_embedding = model.encode([query], show_progress_bar=False).tolist()
+    print("🧮 Encoding query via ONNX...")
+    query_embedding = _encode_texts([query])
     print(f"✓ Query encoded (dim={len(query_embedding[0]) if query_embedding and len(query_embedding) > 0 else 0})")
     
     actual_n_results = min(n_results, collection_count)

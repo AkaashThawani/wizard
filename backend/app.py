@@ -18,6 +18,11 @@ Design:
 
 from __future__ import annotations
 
+# CRITICAL: Set environment variables early to bypass PyTorch 2.6 version check
+import os
+os.environ['HF_HUB_DISABLE_WEIGHTS_ONLY_LOADING'] = '1'
+os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
+
 import asyncio
 import json
 import logging
@@ -870,11 +875,11 @@ def handle_chat_message(data):
             if result.get("success"):
                 results = result.get("results", [])
                 
-                # Extract conversation.talk_user message from results
+                # Extract conversation_talk_user message from results
                 # Now we look in the 'result' field, not 'params'
                 conversation_message = None
                 for tool_result in results:
-                    if tool_result.get("tool") == "conversation.talk_user":
+                    if tool_result.get("tool") == "conversation_talk_user":
                         # Check result field first (this is the actual tool output)
                         result_data = tool_result.get("result", {})
                         if isinstance(result_data, dict):
@@ -894,12 +899,12 @@ def handle_chat_message(data):
                     
                     # Friendly tool names for display
                     tool_display = {
-                        "search.find_segments": "Searching clips",
-                        "edit.keep_only": "Filtering segments",
-                        "edit.remove_short": "Removing short clips",
-                        "edit.trim_segment": "Trimming",
-                        "edit.split_segment": "Splitting",
-                        "export.export": "Exporting video",
+                        "search_find_segments": "Searching clips",
+                        "edit_keep_only": "Filtering segments",
+                        "edit_remove_short": "Removing short clips",
+                        "edit_trim_segment": "Trimming",
+                        "edit_split_segment": "Splitting",
+                        "export_export": "Exporting video",
                     }.get(tool_name, tool_name)
                     
                     # Emit SSE progress event
@@ -909,7 +914,7 @@ def handle_chat_message(data):
                     }))
                     
                     # If export tool completed, emit encode done event to trigger download
-                    if tool_name == "export.export" and tool_result.get("success"):
+                    if tool_name == "export_export" and tool_result.get("success"):
                         sse_q.put_nowait(json.dumps({
                             "event": "stage",
                             "data": {"stage": "encode", "status": "done"}

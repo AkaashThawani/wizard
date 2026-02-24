@@ -39,7 +39,7 @@ class TimelineAgent(BaseAgent):
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
-                name="timeline.get_segments",
+                name="timeline_get_segments",
                 description=(
                     "Get all segments in the timeline pool. "
                     "Returns list of segments with id, text, duration, start, end."
@@ -50,7 +50,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.get_sequence",
+                name="timeline_get_sequence",
                 description=(
                     "Get the current editing sequence. "
                     "Returns ordered list of segment IDs that will be exported."
@@ -61,7 +61,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.get_effective_segments",
+                name="timeline_get_effective_segments",
                 description=(
                     "Get virtual timeline with edits applied. "
                     "Shows segments as they will appear in export (with trim/effects)."
@@ -72,7 +72,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.get_history",
+                name="timeline_get_history",
                 description=(
                     "Get conversation history. "
                     "Returns recent prompts and summaries."
@@ -83,7 +83,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.list_snapshots",
+                name="timeline_list_snapshots",
                 description=(
                     "List all saved snapshots. "
                     "Returns snapshot IDs and timestamps."
@@ -94,7 +94,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.get_source_info",
+                name="timeline_get_source_info",
                 description=(
                     "Get source video information. "
                     "Returns filename, duration, and path."
@@ -105,7 +105,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.rollback",
+                name="timeline_rollback",
                 description=(
                     "Restore timeline to a previous snapshot. "
                     "Use timeline.list_snapshots first to get snapshot IDs."
@@ -122,7 +122,7 @@ class TimelineAgent(BaseAgent):
                 },
             ),
             Tool(
-                name="timeline.take_snapshot",
+                name="timeline_take_snapshot",
                 description=(
                     "Save current timeline state as a snapshot. "
                     "Returns the new snapshot ID."
@@ -140,14 +140,14 @@ class TimelineAgent(BaseAgent):
 
     async def execute_tool(self, name: str, params: dict) -> ToolResult:
         dispatch = {
-            "timeline.get_segments": self._get_segments,
-            "timeline.get_sequence": self._get_sequence,
-            "timeline.get_effective_segments": self._get_effective_segments,
-            "timeline.get_history": self._get_history,
-            "timeline.list_snapshots": self._list_snapshots,
-            "timeline.get_source_info": self._get_source_info,
-            "timeline.rollback": self._rollback,
-            "timeline.take_snapshot": self._take_snapshot,
+            "timeline_get_segments": self._get_segments,
+            "timeline_get_sequence": self._get_sequence,
+            "timeline_get_effective_segments": self._get_effective_segments,
+            "timeline_get_history": self._get_history,
+            "timeline_list_snapshots": self._list_snapshots,
+            "timeline_get_source_info": self._get_source_info,
+            "timeline_rollback": self._rollback,
+            "timeline_take_snapshot": self._take_snapshot,
         }
         
         handler = dispatch.get(name)

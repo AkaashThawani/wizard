@@ -48,11 +48,11 @@ def make_transcription_phase_node(
         
         try:
             # Execute TranscriptionAgent
-            transcription_agent = registry.get_agent("transcription.transcribe")
+            transcription_agent = registry.get_agent("transcription_transcribe")
             if transcription_agent is None:
                 raise ValueError("TranscriptionAgent not found in registry")
             
-            result = await transcription_agent.execute_tool("transcription.transcribe", {})
+            result = await transcription_agent.execute_tool("transcription_transcribe", {})
             
             if not result.success:
                 logger.error("Transcription failed: %s", result.error)
@@ -149,15 +149,15 @@ def make_analysis_phase_node(
         task_names = []
         
         if color_enabled:
-            color_agent = registry.get_agent("color.analyze")
+            color_agent = registry.get_agent("color_analyze")
             if color_agent:
-                tasks.append(color_agent.execute_tool("color.analyze", {}))
+                tasks.append(color_agent.execute_tool("color_analyze", {}))
                 task_names.append("color")
         
         if audio_enabled:
-            audio_agent = registry.get_agent("audio.analyze")
+            audio_agent = registry.get_agent("audio_analyze")
             if audio_agent:
-                tasks.append(audio_agent.execute_tool("audio.analyze", {}))
+                tasks.append(audio_agent.execute_tool("audio_analyze", {}))
                 task_names.append("audio")
         
         if not tasks:
@@ -262,8 +262,8 @@ def make_parallel_analysis_node(
         
         try:
             # Get agents
-            color_agent = registry.get_agent("color.analyze")
-            audio_agent = registry.get_agent("audio.analyze")
+            color_agent = registry.get_agent("color_analyze")
+            audio_agent = registry.get_agent("audio_analyze")
             
             if not color_agent or not audio_agent:
                 raise ValueError("ColorAgent or AudioAgent not found in registry")
@@ -314,7 +314,7 @@ def make_color_full_video_node(
         logger.info("🎨 ColorAgent: Analyzing full video per-second for project %s", project_id)
         
         try:
-            color_agent = registry.get_agent("color.analyze")
+            color_agent = registry.get_agent("color_analyze")
             if color_agent is None:
                 raise ValueError("ColorAgent not found in registry")
             
@@ -353,7 +353,7 @@ def make_audio_full_video_node(
         logger.info("🎵 AudioAgent: Analyzing full video per-second for project %s", project_id)
         
         try:
-            audio_agent = registry.get_agent("audio.analyze")
+            audio_agent = registry.get_agent("audio_analyze")
             if audio_agent is None:
                 raise ValueError("AudioAgent not found in registry")
             
