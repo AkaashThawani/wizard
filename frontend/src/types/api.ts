@@ -43,6 +43,10 @@ export interface TimelineData {
   transcription: TranscriptionSegment[];
   history: HistoryEntry[];
   snapshots: Snapshot[];
+  layers?: {
+    edit_agent?: Record<string, any>;
+    [key: string]: any;
+  };
 }
 
 export interface HistoryEntry {

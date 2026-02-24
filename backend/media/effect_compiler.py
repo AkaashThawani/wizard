@@ -154,6 +154,11 @@ def _build_segment_filters(
             continue
         etype = eff.get("type", "")
         params = eff.get("params", {})
+        
+        # Defensive: ensure params is a dict
+        if not isinstance(params, dict):
+            logger.warning("Effect params is not a dict (got %s), using empty dict", type(params))
+            params = {}
 
         if etype == EffectType.VOLUME:
             level = params.get("level", 1.0)
@@ -187,7 +192,13 @@ def _build_segment_filters(
             v_filters.append(f"crop={w}:{h}:{x}:{y}")
 
         elif etype == EffectType.CAPTION:
-            text = params.get("text", "").replace("'", "\\'").replace(":", "\\:")
+            text = params.get("text", "").strip()
+            # Skip caption if text is empty (happens when params is string/invalid)
+            if not text:
+                logger.warning("Caption effect has no text, skipping")
+                continue
+            # Escape special characters for FFmpeg
+            text = text.replace("'", "\\'").replace(":", "\\:")
             v_filters.append(
                 f"drawtext=text='{text}':fontsize=24:fontcolor=white"
                 f":x=(w-text_w)/2:y=h-text_h-20:box=1:boxcolor=black@0.5"

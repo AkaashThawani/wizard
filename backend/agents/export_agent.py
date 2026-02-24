@@ -77,6 +77,7 @@ class ExportAgent(BaseAgent):
 
     async def _export(self, resolution: str, output_name: str) -> ToolResult:
         from media import effect_compiler, ffmpeg_wrapper
+        from datetime import datetime
 
         sequence = self.state.get_current_sequence()
         if not sequence:
@@ -85,6 +86,15 @@ class ExportAgent(BaseAgent):
                 data={},
                 error="Current sequence is empty. Nothing to export.",
             )
+
+        # Generate default names if None or empty
+        if not resolution:
+            resolution = "full"
+        
+        if not output_name:
+            # Generate timestamped filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_name = f"export_{timestamp}"
 
         # Log export start
         logger.info("=" * 70)

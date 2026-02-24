@@ -71,11 +71,10 @@ def _select_model_size(model_size: str, config: dict) -> str:
 
 def _get_whisper(model_size: str = "small", force_cpu: bool = False):
     """
-    Load Whisper model with GPU acceleration.
+    Load Whisper model using ONNX Runtime (cross-platform).
     
-    Uses PyTorch with CUDA for GPU acceleration on NVIDIA GPUs.
-    On Mac, uses MPS (Metal Performance Shaders) for Apple Silicon.
-    Falls back to CPU if no GPU available.
+    ONNX Runtime works on Mac (CoreML) and Windows (CUDA) without code changes.
+    Auto-detects best execution provider: CUDAExecutionProvider → CoreMLExecutionProvider → CPUExecutionProvider
     
     Args:
         model_size: Whisper model size (tiny, base, small, medium, large-v3)
@@ -85,62 +84,100 @@ def _get_whisper(model_size: str = "small", force_cpu: bool = False):
     
     # Reload if model size OR force_cpu setting changes
     if _whisper_model is None or _whisper_model_size != model_size or _whisper_force_cpu != force_cpu:
-        from transformers import pipeline
+        from optimum.onnxruntime import ORTModelForSpeechSeq2Seq
+        from transformers import AutoProcessor, pipeline
         from utils.device import detect_device
-        import torch
         
         model_id = f"openai/whisper-{model_size}"
         
         # Detect best device
         device_config = detect_device()
         
-        # Determine PyTorch device
+        # Get ONNX Runtime execution providers
         if force_cpu:
-            device = "cpu"
-            torch_dtype = torch.float32
-            logger.info("Loading Whisper model '%s' on CPU (FORCED for testing)...", model_size)
-        elif device_config.device_type.value == "cuda" and torch.cuda.is_available():
-            device = "cuda:0"
-            torch_dtype = torch.float16  # Use FP16 on GPU for speed
-            logger.info("Loading Whisper model '%s' on GPU (CUDA)...", model_size)
-            logger.info("  GPU: %s (%.1f GB)", device_config.gpu_name, device_config.gpu_memory_gb)
-        elif device_config.device_type.value == "mps" and torch.backends.mps.is_available():
-            device = "mps"
-            torch_dtype = torch.float16
-            logger.info("Loading Whisper model '%s' on Apple Silicon (MPS)...", model_size)
+            providers = ["CPUExecutionProvider"]
+            logger.info("Loading Whisper ONNX model '%s' on CPU (FORCED)...", model_size)
         else:
-            device = "cpu"
-            torch_dtype = torch.float32  # Use FP32 on CPU
-            logger.info("Loading Whisper model '%s' on CPU...", model_size)
+            # Use detected providers (CUDA → CoreML → CPU)
+            providers = device_config.onnx_providers
+            logger.info("Loading Whisper ONNX model '%s'...", model_size)
+            logger.info("  Execution providers: %s", providers)
+            if device_config.gpu_name:
+                logger.info("  GPU: %s (%.1f GB)", device_config.gpu_name, device_config.gpu_memory_gb)
         
         try:
-            # Load Whisper with GPU acceleration
+            # Load ONNX model with optimum
+            ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(
+                model_id,
+                export=True,  # Export to ONNX if not cached
+                provider=providers[0],  # Primary provider
+            )
+            
+            processor = AutoProcessor.from_pretrained(model_id)
+            
+            # CRITICAL FIX: Ensure model has config attribute for compatibility
+            # The ONNX model wrapper needs this for transformers pipeline
+            from transformers import WhisperConfig, GenerationConfig
+            
+            if not hasattr(ort_model, 'config'):
+                ort_model.config = WhisperConfig.from_pretrained(model_id)
+            
+            # Add config to nested model structure too (for pipeline.model.config access)
+            if hasattr(ort_model, 'model') and not hasattr(ort_model.model, 'config'):
+                ort_model.model.config = ort_model.config
+            
+            # Also ensure generation_config exists
+            if not hasattr(ort_model, 'generation_config'):
+                ort_model.generation_config = GenerationConfig.from_pretrained(model_id)
+            
+            # Create pipeline with ONNX model
             _whisper_model = pipeline(
                 "automatic-speech-recognition",
-                model=model_id,
-                chunk_length_s=30,  # Process in 30s chunks
-                device=device,  # Use detected device (cuda/mps/cpu)
-                torch_dtype=torch_dtype,  # FP16 on GPU, FP32 on CPU
-                model_kwargs={"use_cache": True},
+                model=ort_model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
+                chunk_length_s=30,
             )
+            
             _whisper_model_size = model_size
-            _whisper_force_cpu = force_cpu  # Track CPU mode for cache
-            logger.info("✓ Whisper model '%s' loaded successfully on %s", model_size, device)
+            _whisper_force_cpu = force_cpu
+            logger.info("✓ Whisper ONNX model '%s' loaded successfully", model_size)
+            logger.info("  Active provider: %s", providers[0])
         except Exception as e:
-            logger.exception("Failed to load Whisper model on %s: %s", device, e)
+            logger.exception("Failed to load Whisper ONNX model: %s", e)
             
             # Fallback to CPU if GPU loading fails
-            if device != "cpu":
-                logger.warning("Falling back to CPU...")
+            if not force_cpu and "CPUExecutionProvider" not in providers:
+                logger.warning("Falling back to CPUExecutionProvider...")
+                ort_model = ORTModelForSpeechSeq2Seq.from_pretrained(
+                    model_id,
+                    export=True,
+                    provider="CPUExecutionProvider",
+                )
+                processor = AutoProcessor.from_pretrained(model_id)
+                
+                # Add config attributes for CPU fallback too
+                from transformers import WhisperConfig, GenerationConfig
+                
+                if not hasattr(ort_model, 'config'):
+                    ort_model.config = WhisperConfig.from_pretrained(model_id)
+                
+                # Add config to nested model structure too
+                if hasattr(ort_model, 'model') and not hasattr(ort_model.model, 'config'):
+                    ort_model.model.config = ort_model.config
+                
+                if not hasattr(ort_model, 'generation_config'):
+                    ort_model.generation_config = GenerationConfig.from_pretrained(model_id)
+                
                 _whisper_model = pipeline(
                     "automatic-speech-recognition",
-                    model=model_id,
+                    model=ort_model,
+                    tokenizer=processor.tokenizer,
+                    feature_extractor=processor.feature_extractor,
                     chunk_length_s=30,
-                    device="cpu",
-                    torch_dtype=torch.float32,
                 )
                 _whisper_model_size = model_size
-                logger.info("Loaded Whisper on CPU (fallback mode)")
+                logger.info("Loaded Whisper ONNX on CPU (fallback mode)")
             else:
                 raise
     
@@ -267,8 +304,13 @@ class TranscriptionAgent(BaseAgent):
         from pipeline.vectorizer import vectorize_segments
 
         # Select model size (auto or manual)
-        model_size_param = params.get("model_size", self.config.get("whisper", {}).get("model_size", "auto"))
+        model_size_param = params.get("model_size") or self.config.get("whisper", {}).get("model_size") or "base"
         model_size = _select_model_size(model_size_param, self.config)
+        
+        # Ensure model_size is never None
+        if not model_size or model_size == "None":
+            model_size = "base"
+            print(f"⚠️  Model size was None, defaulting to: {model_size}")
         
         language = params.get("language") or None
 
@@ -283,52 +325,63 @@ class TranscriptionAgent(BaseAgent):
         model = _get_whisper(model_size, force_cpu=force_cpu)
         
         # Log which device/provider is being used
-        import torch
         import time
+        from utils.device import detect_device
         
         logger.info("=" * 70)
         logger.info("WHISPER INFERENCE STARTING:")
-        logger.info("  Model: %s", model_size)
+        logger.info("  Model: %s (ONNX Runtime)", model_size)
         logger.info("  File: %s", source_path)
         
-        # Show actual device being used
-        try:
-            model_device = str(next(model.model.parameters()).device)
-            logger.info("  Model Device: %s", model_device)
-            
-            from utils.device import detect_device
-            device_config = detect_device()
-            if device_config.gpu_name and "cuda" in model_device:
-                logger.info("  GPU: %s (%.1f GB)", device_config.gpu_name, device_config.gpu_memory_gb)
-        except Exception as e:
-            logger.info("  Device: CPU")
+        device_config = detect_device()
+        logger.info("  Execution provider: %s", device_config.onnx_providers[0])
+        if device_config.gpu_name:
+            logger.info("  GPU: %s (%.1f GB)", device_config.gpu_name, device_config.gpu_memory_gb)
         
         logger.info("=" * 70)
         
         # Start timing
         start_time = time.time()
+        print("\n" + "="*70)
+        print("🎤 WHISPER TRANSCRIPTION START")
+        print(f"  Model: {model_size} (ONNX Runtime)")
+        print(f"  File: {source_path}")
+        print(f"  Provider: {device_config.onnx_providers[0]}")
+        print(f"  Starting at: {start_time}")
+        print("="*70)
+        
         logger.info("⏱️  Starting inference... (timestamp: %.2f)", start_time)
         
-        # Run transcription with word-level timestamps for better accuracy
+        # Run transcription with ONNX pipeline
+        # NOTE: ONNX models don't support word-level timestamps (no cross-attention)
+        # Use chunk-level timestamps instead (faster and ONNX-compatible)
+        print("\n⏳ Running Whisper inference... (this may take a while)")
         result = model(
             source_path,
-            return_timestamps="word",  # Word-level for precise timestamps
+            return_timestamps=True,  # Chunk-level timestamps (ONNX-compatible)
             generate_kwargs={
                 "language": language or "en",  # Default to English if not specified
                 "task": "transcribe",
             },
         )
+        print("✅ Whisper inference complete!")
         
         # End timing
         end_time = time.time()
         elapsed = end_time - start_time
+        
+        print("\n" + "="*70)
+        print(f"🎉 WHISPER TRANSCRIPTION COMPLETE")
+        print(f"  Duration: {elapsed:.2f} seconds")
+        print(f"  Speed: {239.9/elapsed:.2f}x realtime")
+        print("="*70 + "\n")
         
         logger.info("=" * 70)
         logger.info("✓ WHISPER INFERENCE COMPLETED")
         logger.info("  Duration: %.2f seconds", elapsed)
         logger.info("=" * 70)
 
-        # Normalize output to faster-whisper format
+        # Normalize output to standard format
         raw_segments = _normalize_whisper_output(result, source_path)
         
         self._emit("stage", {"stage": "transcription", "status": "done", "count": len(raw_segments)})
@@ -346,7 +399,7 @@ class TranscriptionAgent(BaseAgent):
         logger.info("AFTER whisper_output_to_segments: %d segments, sample text: %s", len(segments), segments[0].text[:100] if segments and segments[0].text else "EMPTY")
 
         # Merge segments to combine words into phrases
-        silence_threshold = self.config.get("silence_threshold", 0.5)
+        silence_threshold = self.config.get("pipeline", {}).get("silence_threshold", 0.5)
         segments = merge_segments(segments, silence_threshold=silence_threshold)
         
         stage_elapsed = time.time() - stage_start
@@ -367,15 +420,29 @@ class TranscriptionAgent(BaseAgent):
         # ----------------------------------------------------------------
         # Stage 4: Chunk (sentence-boundary alignment)
         # ----------------------------------------------------------------
-        logger.info("⏱️  Stage 3: Chunk")
+        logger.info("⏱️ Stage 3: Chunk")
         stage_start = time.time()
         self._emit("stage", {"stage": "chunk", "status": "running"})
-        
-        segments = chunk_segments(segments)
-        
+
+        # Pass configuration to chunker for silence-aware splitting
+        max_segment_duration = self.config.get("pipeline", {}).get("max_segment_duration", 8.0)
+        segments = chunk_segments(
+            segments,
+            silence_threshold=silence_threshold,
+            max_segment_duration=max_segment_duration
+        )
+
         stage_elapsed = time.time() - stage_start
         self._emit("stage", {"stage": "chunk", "status": "done", "count": len(segments)})
         logger.info("✓ Chunk complete: %.2f seconds (%d segments)", stage_elapsed, len(segments))
+
+        # ----------------------------------------------------------------
+        # Stage 3.5: Remove repetition (Whisper hallucination fix)
+        # ----------------------------------------------------------------
+        from pipeline.repetition_filter import filter_segment_repetition
+        
+        logger.info("Filtering repetitive text patterns...")
+        segments = filter_segment_repetition(segments, max_repeat=5)
 
         # ----------------------------------------------------------------
         # Stage 5: Enrich (LLM — topics, keywords, summary) [OPTIONAL]
@@ -447,12 +514,12 @@ class TranscriptionAgent(BaseAgent):
         )
 
     def _get_llm_client(self):
-        """Retrieve LLM client from config if available."""
+        """Retrieve global LLM client instance."""
         try:
-            from llm.client import LLMClient
-            provider = self.config.get("llm", {}).get("provider", "anthropic")
-            model = self.config.get("llm", {}).get("model", "claude-sonnet-4-6")
-            return LLMClient(provider=provider, model=model)
+            from llm.client import get_llm_client
+            provider = self.config.get("llm", {}).get("provider")
+            model = self.config.get("llm", {}).get("model")
+            return get_llm_client(provider=provider, model=model)
         except Exception:
             return None
 

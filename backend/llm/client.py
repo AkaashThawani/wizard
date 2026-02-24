@@ -23,6 +23,45 @@ from agents.base import Tool, ToolCall
 # Module-level logger (so it picks up the configuration from app.py)
 logger = logging.getLogger(__name__)
 
+# Global LLM client instance (singleton)
+_global_client = None
+
+
+def get_llm_client(provider: str | None = None, model: str | None = None) -> "LLMClient":
+    """
+    Get or create the global LLM client instance.
+    
+    Auto-detects provider based on available API keys if not specified.
+    This prevents multiple initialization and redundant logging.
+    
+    Args:
+        provider: Override provider (anthropic, openai, gemini)
+        model: Override model name
+    
+    Returns:
+        Singleton LLMClient instance
+    """
+    global _global_client
+    
+    if _global_client is None:
+        # Auto-detect provider from available API keys
+        if provider is None:
+            if os.environ.get("GEMINI_API_KEY"):
+                provider = "gemini"
+                model = model or "gemini-2.5-flash"
+            elif os.environ.get("ANTHROPIC_API_KEY"):
+                provider = "anthropic"
+                model = model or "claude-sonnet-4-6"
+            elif os.environ.get("OPENAI_API_KEY"):
+                provider = "openai"
+                model = model or "gpt-4o"
+            else:
+                raise ValueError("No API key found. Set GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
+        
+        _global_client = LLMClient(provider=provider, model=model)
+    
+    return _global_client
+
 
 class LLMClient:
     """

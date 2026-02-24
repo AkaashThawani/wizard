@@ -193,9 +193,7 @@ def get_onnx_providers(cuda_enabled: bool = True) -> list[str]:
     providers = []
     
     if cuda_enabled:
-        # Priority for NVIDIA systems: TensorRT > CUDA > CPU
-        if ONNXProvider.TENSORRT.value in available:
-            providers.append(ONNXProvider.TENSORRT.value)
+        # Priority for NVIDIA systems: CUDA > CPU (TensorRT removed - requires separate install)
         if ONNXProvider.CUDA.value in available:
             providers.append(ONNXProvider.CUDA.value)
     else:

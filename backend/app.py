@@ -36,6 +36,19 @@ from flask import Flask, Response, jsonify, request, send_file, stream_with_cont
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
+from timeline.state import TimelineState
+from agents.registry import AgentRegistry
+from agents.transcription_agent import TranscriptionAgent
+from agents.search_agent import SearchAgent
+from agents.edit_agent import EditAgent
+from agents.export_agent import ExportAgent
+from agents.color_agent import ColorAgent
+from agents.audio_agent import AudioAgent
+from llm.client import LLMClient
+from orchestrator.auto_analysis import create_agent_graph
+from orchestrator.chat_workflow import create_chat_workflow  # NEW: ReAct agent
+from orchestrator.sse_manager import SSEConnectionManager
+
 # Suppress warnings from transformers and other libraries
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -59,6 +72,18 @@ logger.setLevel(logging.INFO)
 # Enable LLM client logging to see tool calls
 logging.getLogger("llm.client").setLevel(logging.INFO)
 logging.getLogger("orchestrator.llm_orchestrator_node").setLevel(logging.INFO)
+
+# Enable LangGraph/LangChain logging to see agent reasoning (DEBUG for full details)
+logging.getLogger("langgraph").setLevel(logging.DEBUG)
+logging.getLogger("langchain").setLevel(logging.DEBUG)
+logging.getLogger("langchain_core").setLevel(logging.DEBUG)
+logging.getLogger("langchain_core.runnables").setLevel(logging.DEBUG)
+logging.getLogger("orchestrator.chat_workflow").setLevel(logging.DEBUG)
+
+# Enable Gemini-specific loggers
+logging.getLogger("langchain_google_genai").setLevel(logging.DEBUG)
+logging.getLogger("google.generativeai").setLevel(logging.INFO)
+logging.getLogger("google.ai.generativelanguage").setLevel(logging.INFO)
 
 # Enable export and FFmpeg logging to see export process
 logging.getLogger("agents.export_agent").setLevel(logging.INFO)
@@ -147,6 +172,7 @@ def _register_agents_from_config(
     from agents.color_agent import ColorAgent
     from agents.audio_agent import AudioAgent
     from agents.conversation_agent import ConversationAgent
+    from agents.timeline_agent import TimelineAgent
     
     registry = AgentRegistry()
     agent_config = {"whisper_model": config.get("whisper", {}).get("model_size", "base"), **config}
@@ -180,23 +206,15 @@ def _register_agents_from_config(
     registry.register(ConversationAgent(state, agent_config, progress_callback))
     logger.info("✓ Registered ConversationAgent")
     
+    # Always register TimelineAgent (query timeline state)
+    registry.register(TimelineAgent(state, agent_config, progress_callback))
+    logger.info("✓ Registered TimelineAgent")
+    
     return registry
 
 
 def _create_project_context(project_id: str) -> dict:
-    from timeline.state import TimelineState
-    from agents.registry import AgentRegistry
-    from agents.transcription_agent import TranscriptionAgent
-    from agents.search_agent import SearchAgent
-    from agents.edit_agent import EditAgent
-    from agents.export_agent import ExportAgent
-    from agents.color_agent import ColorAgent
-    from agents.audio_agent import AudioAgent
-    from llm.client import LLMClient
-    from orchestrator.graph import create_agent_graph
-    from orchestrator.prompt_graph import create_prompt_workflow
-    from orchestrator.sse_manager import SSEConnectionManager
-
+    """Create project context with auto-analysis and chat workflows."""
     # SSE queue — progress events are pushed here by agents
     sse_q: queue.Queue = queue.Queue()
 
@@ -224,13 +242,13 @@ def _create_project_context(project_id: str) -> dict:
     # Create auto-analysis workflow (for upload)
     auto_workflow = create_agent_graph(registry, state, CONFIG, sse_manager)
     
-    # Create prompt workflow (for manual prompts)
-    prompt_workflow = create_prompt_workflow(registry, state, llm_client, CONFIG)
+    # Create chat workflow using ReAct agent (for manual prompts)
+    chat_workflow = create_chat_workflow(registry, state, llm_client, CONFIG)
 
     ctx = {
         "state": state,
         "auto_workflow": auto_workflow,
-        "prompt_workflow": prompt_workflow,
+        "chat_workflow": chat_workflow,  # Changed from prompt_workflow
         "sse_manager": sse_manager,
         "sse_queue": sse_q,
     }
@@ -381,19 +399,25 @@ def handle_prompt(project_id: str):
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
-    prompt_workflow = ctx["prompt_workflow"]
+    chat_workflow = ctx["chat_workflow"]
     sse_q = ctx["sse_queue"]
 
     # Push start event to SSE
     sse_q.put_nowait(json.dumps({"event": "prompt_start", "data": {"prompt": prompt}}))
 
-    # Run prompt workflow in new event loop (Flask runs synchronously)
+    # Run chat workflow in new event loop (Flask runs synchronously)
     try:
+        from orchestrator.chat_workflow import invoke_chat_workflow
+        
         loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(prompt_workflow.invoke({
-            "project_id": project_id,
-            "prompt": prompt
-        }))
+        asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(invoke_chat_workflow(
+            agent=chat_workflow,
+            project_id=project_id,
+            prompt=prompt,
+            timeline_state=ctx["state"]
+        ))
         loop.close()
     except Exception as exc:
         logger.exception("Prompt workflow error: %s", exc)
@@ -496,12 +520,36 @@ def get_timeline(project_id: str):
             "text": seg.text,
         })
     
+    # Build edit decision model (EDL) - shows all edit layers
+    edit_decisions = {}
+    edit_layers = state.get_agent_layer("edit_agent")
+    for seg_id, edit_data in edit_layers.items():
+        edit_decisions[seg_id] = {
+            "trim": edit_data.get("trim", {}),
+            "effects": edit_data.get("effects", []),
+        }
+    
+    # Build effective (virtual) timeline showing segments with edits applied
+    effective_timeline = []
+    for entry in sequence:
+        effective_seg = state.get_effective_segment(entry.segment_id)
+        if effective_seg:
+            effective_timeline.append({
+                "id": effective_seg.id,
+                "start": round(effective_seg.start, 2),
+                "end": round(effective_seg.end, 2),
+                "duration": round(effective_seg.duration, 2),
+                "text": effective_seg.text[:100],
+            })
+    
     return jsonify({
         "project_id": project_id,
         "source": state.get_source(),
         "segment_count": state.segment_count(),
         "current_sequence": gui_segments,
         "transcription": transcription,  # Full transcription with timestamps
+        "edit_decisions": edit_decisions,  # Edit Decision Model (EDL)
+        "effective_timeline": effective_timeline,  # Virtual timeline with edits applied
         "history": state.get_history()[-10:],
         "snapshots": state.list_snapshots(),
     })
@@ -626,7 +674,7 @@ def get_chat_history(project_id: str):
     
     try:
         # Access SqliteSaver checkpoints
-        prompt_workflow = ctx["prompt_workflow"]
+        chat_workflow = ctx["chat_workflow"]
         
         # Get conversation history from checkpoints
         # LangGraph stores state in checkpoints, we need to extract messages
@@ -796,26 +844,77 @@ def handle_chat_message(data):
         'project_id': project_id
     }, room=project_id)
     
-    # Execute prompt workflow in background thread
+    # Execute chat workflow in background thread
     def execute_chat_prompt():
-        """Execute prompt workflow and send results via WebSocket."""
+        """Execute chat workflow and send results via WebSocket."""
         try:
-            prompt_workflow = ctx["prompt_workflow"]
+            from orchestrator.chat_workflow import invoke_chat_workflow
+            
+            chat_workflow = ctx["chat_workflow"]
+            sse_q = ctx["sse_queue"]
             
             # Run workflow
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            result = loop.run_until_complete(prompt_workflow.invoke({
-                "project_id": project_id,
-                "prompt": message
-            }))
+            result = loop.run_until_complete(invoke_chat_workflow(
+                agent=chat_workflow,
+                project_id=project_id,
+                prompt=message,
+                timeline_state=ctx["state"]
+            ))
             
             loop.close()
             
             # Send assistant response
             if result.get("success"):
-                response_message = result.get("summary", "Done!")
+                results = result.get("results", [])
+                
+                # Extract conversation.talk_user message from results
+                # Now we look in the 'result' field, not 'params'
+                conversation_message = None
+                for tool_result in results:
+                    if tool_result.get("tool") == "conversation.talk_user":
+                        # Check result field first (this is the actual tool output)
+                        result_data = tool_result.get("result", {})
+                        if isinstance(result_data, dict):
+                            conversation_message = result_data.get("message", "")
+                        # Fallback to params if result not found (backwards compatibility)
+                        if not conversation_message:
+                            conversation_message = tool_result.get("params", {}).get("message", "")
+                        if conversation_message:
+                            break
+                
+                # Use conversation message if available, otherwise fallback to summary
+                response_message = conversation_message or result.get("summary", "Done!")
+                
+                # Emit tool progress events to SSE for UI feedback
+                for tool_result in results:
+                    tool_name = tool_result.get("tool", "")
+                    
+                    # Friendly tool names for display
+                    tool_display = {
+                        "search.find_segments": "Searching clips",
+                        "edit.keep_only": "Filtering segments",
+                        "edit.remove_short": "Removing short clips",
+                        "edit.trim_segment": "Trimming",
+                        "edit.split_segment": "Splitting",
+                        "export.export": "Exporting video",
+                    }.get(tool_name, tool_name)
+                    
+                    # Emit SSE progress event
+                    sse_q.put_nowait(json.dumps({
+                        "event": "stage",
+                        "data": {"stage": tool_display, "status": "done"}
+                    }))
+                    
+                    # If export tool completed, emit encode done event to trigger download
+                    if tool_name == "export.export" and tool_result.get("success"):
+                        sse_q.put_nowait(json.dumps({
+                            "event": "stage",
+                            "data": {"stage": "encode", "status": "done"}
+                        }))
+                        logger.info("Emitted SSE encode done event for auto-download")
                 
                 # Save to timeline history for persistence
                 state = ctx["state"]
@@ -827,7 +926,7 @@ def handle_chat_message(data):
                     'content': response_message,
                     'timestamp': None,  # Server generates timestamp
                     'project_id': project_id,
-                    'results': result.get("results", [])
+                    'results': results
                 }, room=project_id)
                 
                 logger.info("Chat response sent for project %s", project_id)

@@ -18,9 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from orchestrator.graph_types import AgentState
 from orchestrator.nodes import (
     make_transcription_phase_node,
-    make_analysis_phase_node,
-    make_color_full_video_node,
-    make_audio_full_video_node,
+    make_parallel_analysis_node,
     make_reassembly_node,
     make_error_handler_node
 )
@@ -100,33 +98,25 @@ def create_agent_graph(
     
     # Create nodes with dependencies injected via closures
     transcription_node = make_transcription_phase_node(registry, timeline_state, sse_manager)
-    color_full_node = make_color_full_video_node(registry, timeline_state, sse_manager)
-    audio_full_node = make_audio_full_video_node(registry, timeline_state, sse_manager)
+    parallel_analysis_node = make_parallel_analysis_node(registry, timeline_state, sse_manager)
     reassembly_node_fn = make_reassembly_node(registry, timeline_state, config)
     error_node = make_error_handler_node(timeline_state, sse_manager)
     
     # Add nodes to graph
     graph.add_node("transcription_phase", transcription_node)
-    graph.add_node("color_full_video", color_full_node)
-    graph.add_node("audio_full_video", audio_full_node)
+    graph.add_node("parallel_analysis", parallel_analysis_node)
     graph.add_node("reassembly", reassembly_node_fn)
     graph.add_node("error_handler", error_node)
     
-    # Add edges - NEW: All 3 agents run in parallel from START
-    # START → [transcription, color, audio] (all 3 parallel)
-    graph.add_conditional_edges(
-        START,
-        lambda state: [
-            Send("transcription_phase", state),
-            Send("color_full_video", state),
-            Send("audio_full_video", state)
-        ]
-    )
+    # Add edges - Sequential: transcription → parallel_analysis → reassembly
+    # START → transcription (must complete first)
+    graph.add_edge(START, "transcription_phase")
     
-    # All 3 converge to reassembly
-    graph.add_edge("transcription_phase", "reassembly")
-    graph.add_edge("color_full_video", "reassembly")
-    graph.add_edge("audio_full_video", "reassembly")
+    # transcription → parallel_analysis (color + audio run together)
+    graph.add_edge("transcription_phase", "parallel_analysis")
+    
+    # parallel_analysis → reassembly
+    graph.add_edge("parallel_analysis", "reassembly")
     
     # reassembly → END (always)
     graph.add_edge("reassembly", END)

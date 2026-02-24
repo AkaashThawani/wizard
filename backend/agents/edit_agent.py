@@ -278,7 +278,7 @@ class EditAgent(BaseAgent):
     async def _set_transition(self, params: dict) -> ToolResult:
         segment_id = params.get("segment_id")
         transition_type = params.get("type", "cut")
-        duration_s = float(params.get("duration_s", 0.5))
+        duration_s = float(params.get("duration_s") or 0.5)
 
         if not segment_id:
             return ToolResult(success=False, data={}, error="segment_id is required")

@@ -34,7 +34,7 @@
     }
   },
   "whisper": {
-    "model_size": "auto",
+    "model_size": "base",
     "model_size_8gb": "base",
     "model_size_16gb": "small",
     "model_size_32gb": "large-v3",
@@ -48,10 +48,11 @@
     "device": "auto"
   },
   "pipeline": {
-    "silence_threshold": 0.5,
+    "silence_threshold": 0.3,
+    "max_segment_duration": 7.0,
     "min_segment_duration": 1.0,
     "filler_words": ["um", "uh", "er", "ah", "hmm", "hm"],
-    "enable_enrichment": true,
+    "enable_enrichment": false,
     "enable_vectorization": true,
     "parallel_analysis": true
   },

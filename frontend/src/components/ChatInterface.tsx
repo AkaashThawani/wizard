@@ -82,21 +82,8 @@ export const ChatInterface = ({ projectId }: ChatInterfaceProps) => {
       <div className="chat-messages">
         {messages.length === 0 ? (
           <div className="chat-empty">
-            <p>👋 Hi! I'm your video editing assistant.</p>
-            <p>Click a suggestion below or type your own command:</p>
-            <div className="suggested-actions">
-              {suggestedActions.map((action, index) => (
-                <button
-                  key={index}
-                  className="action-chip"
-                  onClick={() => handleSuggestedAction(action.prompt)}
-                  disabled={!connected || !projectId}
-                >
-                  <span className="action-icon">{action.icon}</span>
-                  <span className="action-text">{action.text}</span>
-                </button>
-              ))}
-            </div>
+            <p>👋 Hi! I'm Wizard.</p>
+            <p>I can perform Magic!!</p>
           </div>
         ) : (
           messages.map((msg, index) => (
@@ -115,14 +102,14 @@ export const ChatInterface = ({ projectId }: ChatInterfaceProps) => {
                 )}
               </div>
               <div className="message-content">{msg.content}</div>
-              {msg.results && msg.results.length > 0 && (
+              {/* {msg.results && msg.results.length > 0 && (
                 <div className="message-results">
                   <details>
                     <summary>View Details ({msg.results.length} items)</summary>
                     <pre>{JSON.stringify(msg.results, null, 2)}</pre>
                   </details>
                 </div>
-              )}
+              )} */}
             </div>
           ))
         )}
@@ -163,7 +150,7 @@ export const ChatInterface = ({ projectId }: ChatInterfaceProps) => {
           disabled={!input.trim() || !connected || !projectId || status === 'thinking'}
           className="send-button"
         >
-          {status === 'thinking' ? '⏳' : '📤'} Send
+          {status === 'thinking' ? '⏳' : 'Send'} 
         </button>
       </div>
     </div>

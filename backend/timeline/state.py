@@ -190,7 +190,6 @@ class TimelineState:
             speaker=base_segment.speaker,
             source=base_segment.source,
             chroma_id=base_segment.chroma_id,
-            is_silent=base_segment.is_silent,
         )
 
     # ------------------------------------------------------------------
@@ -396,8 +395,46 @@ class TimelineState:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
 
     def load(self) -> None:
-        with open(self._path, "r", encoding="utf-8") as f:
-            self._data = json.load(f)
+        """
+        Load timeline state from disk.
+        
+        If the file is corrupted, backs it up and starts with a clean state.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            with open(self._path, "r", encoding="utf-8") as f:
+                self._data = json.load(f)
+            logger.info("✓ Loaded timeline state for project %s (%d segments)", 
+                       self.project_id, len(self._data.get("segment_pool", {})))
+        except json.JSONDecodeError as e:
+            # Corrupted JSON - backup and reset
+            backup_path = self._path.with_suffix(".json.corrupted")
+            logger.error("=" * 70)
+            logger.error("❌ CORRUPTED STATE FILE DETECTED!")
+            logger.error("  Project: %s", self.project_id)
+            logger.error("  Error: %s", str(e))
+            logger.error("  Creating backup: %s", backup_path.name)
+            logger.error("  Starting with clean state...")
+            logger.error("=" * 70)
+            
+            # Backup corrupted file
+            try:
+                import shutil
+                shutil.copy2(self._path, backup_path)
+                logger.info("✓ Corrupted file backed up to: %s", backup_path)
+            except Exception as backup_err:
+                logger.warning("Failed to backup corrupted file: %s", backup_err)
+            
+            # Start fresh
+            self._data = self._empty_state()
+            self.save()  # Overwrite corrupted file with clean state
+            
+        except Exception as e:
+            # Other errors (file not found, permissions, etc.)
+            logger.error("Failed to load timeline state: %s", str(e))
+            self._data = self._empty_state()
 
     def to_dict(self) -> dict:
         """Return the raw internal state dict (for API responses)."""

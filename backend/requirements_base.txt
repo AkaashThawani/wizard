@@ -12,7 +12,7 @@ anthropic>=0.40.0
 google-generativeai>=0.3.0
 
 # ── ML & NLP (excluding torch/onnxruntime) ───────────────────────────────────
-optimum>=1.14.0
+optimum[onnxruntime]>=1.14.0  # ONNX Runtime integration (cross-platform)
 transformers>=4.30.0
 sentence-transformers>=3.0.0
 
@@ -34,6 +34,7 @@ psutil>=5.9.0
 langgraph>=0.2.0           # Agent orchestration with state management (Send API from 0.2.0+)
 langgraph-checkpoint-sqlite>=1.0.0  # SQLite checkpointing for conversation persistence
 langchain-core>=0.1.50     # Core abstractions for LLMs and tools
+langchain-anthropic>=0.1.0  # Anthropic Claude LangChain integration
 langchain-google-genai>=0.0.5  # Google Gemini LangChain integration
 langsmith>=0.1.0           # Observability and tracing (optional but recommended)
-aiosqlite
+aiosqlite>=0.19.0          # Async SQLite support for AsyncSqliteSaver

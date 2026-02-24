@@ -539,15 +539,15 @@ function App() {
           {projectId ? `project: ${projectId}` : 'No project'}
         </span>
         <div className="header-actions">
-          <button onClick={handleNewProject} className="btn-secondary">
+          <button onClick={handleNewProject} className="btn-header">
             New Project
           </button>
           {projectId && (
-            <button onClick={handleClearProject} className="btn-secondary" style={{background:'#dc3545'}}>
+            <button onClick={handleClearProject} className="btn-header btn-danger">
               Clear Project
             </button>
           )}
-          <label className="btn-primary">
+          <label className="btn-header btn-primary-header">
             Upload Video
             <input type="file" accept="video/*" onChange={handleUpload} style={{display:'none'}} />
           </label>
@@ -577,23 +577,28 @@ function App() {
             <button onClick={togglePlay} className="timeline-play-btn" disabled={!timeline?.source}>
               {isPlaying ? '⏸' : '▶'}
             </button>
-            <span>Timeline</span>
-            {timeline && timeline.current_sequence.length < timeline.transcription.length && (
-              <>
-                <span className="badge">{timeline.current_sequence.length} clips</span>
-                <span className="time-display">
-                  {formatTime(virtualTime)} / {formatTime(totalVirtualDuration)}
-                </span>
-              </>
-            )}
+            <div className="timeline-info-box">
+              <span>Timeline</span>
+              <span className="divider">|</span>
+              <span>{progress}</span>
+              {timeline && timeline.current_sequence.length < timeline.transcription.length && (
+                <>
+                  <span className="divider">|</span>
+                  <span>{timeline.current_sequence.length} clips</span>
+                  <span className="divider">|</span>
+                  <span>
+                    {formatTime(virtualTime)} / {formatTime(totalVirtualDuration)}
+                  </span>
+                </>
+              )}
+            </div>
             {timeline && timeline.current_sequence.length > 0 && (
               <button 
                 onClick={handleExport}
                 disabled={isExporting}
-                className="btn-primary"
-                style={{marginLeft: 'auto', fontSize: '11px', padding: '4px 10px'}}
+                className="btn-export"
               >
-                {isExporting ? '⏳ Exporting...' : '📥 Export'}
+                {isExporting ? 'Exporting...' : 'Export'}
               </button>
             )}
           </div>
@@ -644,8 +649,8 @@ function App() {
               </div>
             </div>
           ) : (
-            <div className="timeline-status">
-              <span>{progress}</span>
+            <div className="timeline-empty">
+              {/* Status now shown in header only */}
             </div>
           )}
         </div>
@@ -677,7 +682,57 @@ function App() {
             </div>
           </details>
 
-          <details className="panel">
+          {/* Edit Decisions - show if there are edits (transitions in sequence, trim/effects in layers) */}
+          {timeline && (
+            timeline.current_sequence.some(s => s.transition_in) || 
+            (timeline.layers?.edit_agent && Object.keys(timeline.layers.edit_agent).length > 0)
+          ) && (
+            <details className="panel">
+              <summary>Edit Decisions</summary>
+              <div className="content">
+                {timeline.current_sequence
+                  .filter(seg => {
+                    const hasTransition = !!seg.transition_in;
+                    const hasLayerEdits = timeline.layers?.edit_agent?.[seg.id];
+                    return hasTransition || hasLayerEdits;
+                  })
+                  .map(segment => {
+                    const editData = timeline.layers?.edit_agent?.[segment.id] || {};
+                    
+                    return (
+                      <div key={segment.id} className="edit-item">
+                        <div className="edit-header" onClick={() => handleSegmentClick(segment.start)}>
+                          <strong>Segment {segment.id.substring(0, 8)}</strong>
+                          <span className="edit-time">
+                            {Math.floor(segment.start)}s - {Math.floor(segment.end)}s
+                          </span>
+                        </div>
+                        
+                        {editData.trim && (
+                          <div className="edit-detail">
+                            Trim: -{editData.trim.start || 0}s start, -{editData.trim.end || 0}s end
+                          </div>
+                        )}
+                        
+                        {segment.transition_in && (
+                          <div className="edit-detail">
+                            Transition: {segment.transition_in.type} ({segment.transition_in.duration_s}s)
+                          </div>
+                        )}
+                        
+                        {editData.effects && editData.effects.length > 0 && (
+                          <div className="edit-detail">
+                            Effects: {editData.effects.map((e: any) => e.type).join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </details>
+          )}
+
+          {/* <details className="panel">
             <summary>History</summary>
             <div className="content">
               {timeline?.history.map((h, i) => (
@@ -692,7 +747,7 @@ function App() {
                 </div>
               ))}
             </div>
-          </details>
+          </details> */}
         </div>
       </main>
     </div>

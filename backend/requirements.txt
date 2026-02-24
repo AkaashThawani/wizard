@@ -37,17 +37,19 @@ google-generativeai>=0.3.0  # for Gemini provider
 # LangGraph orchestration framework
 langgraph>=0.2.0           # Agent orchestration with state management (Send API from 0.2.0+)
 langgraph-checkpoint-sqlite>=1.0.0  # SQLite checkpointing for conversation persistence
+aiosqlite>=0.19.0          # Async SQLite support for AsyncSqliteSaver
 langchain-core>=0.1.50     # Core abstractions for LLMs and tools
+langchain-anthropic>=0.1.0  # Anthropic Claude LangChain integration
 langchain-google-genai>=0.0.5  # Google Gemini LangChain integration
 langsmith>=0.1.0           # Observability and tracing (optional but recommended)
 
 # ── Transcription & ML (CPU-compatible, works on all platforms) ──────────────
 # Base packages - platform-independent:
-optimum[onnxruntime]>=1.14.0  # ONNX Runtime (CPU version)
+optimum[onnxruntime]>=1.14.0  # ONNX Runtime (CPU version) - cross-platform
 transformers>=4.30.0
 
 # NOTE: For GPU acceleration, see installation instructions at top of file.
-# GPU packages (onnxruntime-gpu, torch) are installed separately per platform.
+# ONNX Runtime automatically uses: CUDA (Windows/Linux) → CoreML (Mac) → CPU
 
 # ── Embeddings ───────────────────────────────────────────────────────────────
 sentence-transformers>=3.0.0

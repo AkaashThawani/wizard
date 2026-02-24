@@ -236,6 +236,71 @@ def make_analysis_phase_node(
     return analysis_phase_node
 
 
+def make_parallel_analysis_node(
+    registry: Any,
+    timeline_state: Any,
+    sse_manager: Any
+) -> Callable[[AgentState], Awaitable[AgentState]]:
+    """Factory function for parallel color+audio analysis node."""
+    
+    async def parallel_analysis_node(state: AgentState) -> AgentState:
+        """
+        Run ColorAgent and AudioAgent in TRUE parallel using asyncio.gather().
+        
+        This is faster than LangGraph's Send API which serializes state updates.
+        """
+        project_id = state["project_id"]
+        logger.info("=" * 70)
+        logger.info("🚀 PARALLEL ANALYSIS NODE INVOKED")
+        logger.info("  Project: %s", project_id)
+        logger.info("=" * 70)
+        
+        visual_timeline = []
+        audio_timeline = []
+        visual_done = False
+        audio_done = False
+        
+        try:
+            # Get agents
+            color_agent = registry.get_agent("color.analyze")
+            audio_agent = registry.get_agent("audio.analyze")
+            
+            if not color_agent or not audio_agent:
+                raise ValueError("ColorAgent or AudioAgent not found in registry")
+            
+            # Run BOTH agents in parallel using asyncio.gather()
+            logger.info("⚡ Running ColorAgent and AudioAgent concurrently...")
+            import time
+            start_time = time.time()
+            
+            visual_timeline, audio_timeline = await asyncio.gather(
+                color_agent.analyze_full_video(),
+                audio_agent.analyze_full_video(),
+                return_exceptions=False  # Raise if either fails
+            )
+            
+            elapsed = time.time() - start_time
+            logger.info("✓ PARALLEL analysis complete in %.2f seconds", elapsed)
+            logger.info("  ColorAgent: %d seconds analyzed", len(visual_timeline))
+            logger.info("  AudioAgent: %d seconds analyzed", len(audio_timeline))
+            
+            visual_done = True
+            audio_done = True
+            
+        except Exception as exc:
+            logger.exception("Parallel analysis failed: %s", exc)
+        
+        # Return combined results
+        return {
+            "visual_timeline": visual_timeline,
+            "audio_timeline": audio_timeline,
+            "visual_timeline_done": visual_done,
+            "audio_timeline_done": audio_done,
+        }
+    
+    return parallel_analysis_node
+
+
 def make_color_full_video_node(
     registry: Any,
     timeline_state: Any,

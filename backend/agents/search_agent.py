@@ -101,7 +101,13 @@ class SearchAgent(BaseAgent):
             return ToolResult(success=False, data={}, error=f"Unknown tool: {name}")
 
         query = params.get("query", "").strip()
-        max_results = int(params.get("max_results", 10))
+        
+        # Handle max_results - if None or not provided, return all results
+        max_results_param = params.get("max_results")
+        if max_results_param is None:
+            max_results = None  # Return all results
+        else:
+            max_results = int(max_results_param)
 
         if not query:
             return ToolResult(success=False, data={}, error="query is required")
@@ -112,7 +118,7 @@ class SearchAgent(BaseAgent):
             logger.exception("Search failed: %s", exc)
             return ToolResult(success=False, data={}, error=str(exc))
 
-    async def _search(self, query: str, max_results: int) -> ToolResult:
+    async def _search(self, query: str, max_results: int | None) -> ToolResult:
         from pipeline.vectorizer import similarity_search
 
         self._emit("stage", {"stage": "search", "status": "running", "query": query})
@@ -206,7 +212,7 @@ class SearchAgent(BaseAgent):
         self,
         query: str,
         candidate_ids: list[str],
-        max_results: int,
+        max_results: int | None,
     ) -> list[str]:
         """Use Claude to filter candidate segments to only relevant ones."""
         segments = self.state.get_all_segments()
@@ -229,10 +235,12 @@ class SearchAgent(BaseAgent):
             )
             result = json.loads(raw)
             ids = result.get("segment_ids", [])
-            return [sid for sid in ids if sid in {c["id"] for c in candidates}][:max_results]
+            # Handle None - return all results if max_results is None
+            filtered = [sid for sid in ids if sid in {c["id"] for c in candidates}]
+            return filtered if max_results is None else filtered[:max_results]
         except Exception as exc:
             logger.warning("LLM refinement failed: %s — falling back to vector results", exc)
-            return candidate_ids[:max_results]
+            return candidate_ids if max_results is None else candidate_ids[:max_results]
 
     def _build_text_display(self, segment_ids: list[str], segments: dict) -> str:
         """Build formatted text display of found segments."""

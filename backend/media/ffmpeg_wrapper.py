@@ -253,53 +253,52 @@ def _run(cmd: list[str], description: str = "") -> None:
     """Run an FFmpeg command, raise RuntimeError on non-zero exit."""
     import time
     
-    logger.info("=" * 70)
-    logger.info("🎬 FFMPEG COMMAND [%s]:", description)
-    logger.info("=" * 70)
+    # Only log for major operations (export, concat), not frame extraction
+    is_major = any(x in description for x in ["export", "concat", "cut"])
     
-    # Log full command on one line (copyable)
-    full_cmd = " ".join(cmd)
-    logger.info("COMMAND: %s", full_cmd)
-    
-    # Also log in readable multi-line format
-    logger.info("\nReadable format:")
-    logger.info("  ffmpeg \\")
-    for i, arg in enumerate(cmd[1:], 1):
-        if i < len(cmd) - 1:
-            logger.info("    %s \\", arg)
-        else:
-            logger.info("    %s", arg)
-    logger.info("=" * 70)
+    if is_major:
+        full_cmd = " ".join(cmd)
+        logger.info("🎬 FFmpeg: %s", description)
+        logger.debug("Command: %s", full_cmd)
     
     # Start timing
     start_time = time.time()
-    start_str = time.strftime("%H:%M:%S")
-    logger.info("🕐 FFMPEG STARTED at %s", start_str)
+    
+    # Set environment to suppress fontconfig warnings on Windows
+    env = os.environ.copy()
+    env["FONTCONFIG_FILE"] = "NUL"  # Suppress fontconfig warnings
+    env["FONTCONFIG_PATH"] = "NUL"
     
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=600,  # 10-minute hard limit
+        env=env,
     )
     
     # End timing
     end_time = time.time()
     elapsed = end_time - start_time
-    end_str = time.strftime("%H:%M:%S")
     
     if result.returncode != 0:
-        logger.error("⏱️ FFMPEG failed after %.2f seconds", elapsed)
-        logger.error("FFmpeg stderr:\n%s", result.stderr[-2000:])
+        logger.error("✗ FFmpeg failed: %s (%.2fs)", description, elapsed)
+        
+        # Show only the LAST part of stderr (actual errors, not version info)
+        # FFmpeg errors are always at the end
+        error_output = result.stderr[-1500:]  # Last 1500 chars = actual error
+        
+        # Remove fontconfig lines if present
+        if 'Fontconfig error' in error_output:
+            lines = error_output.split('\n')
+            lines = [l for l in lines if 'Fontconfig error' not in l]
+            error_output = '\n'.join(lines)
+        
+        logger.error("Error: %s", error_output)
         raise RuntimeError(
-            f"FFmpeg failed [{description}]:\n{result.stderr[-2000:]}"
+            f"FFmpeg failed [{description}]:\n{error_output}"
         )
     
-    logger.info("=" * 70)
-    logger.info("✅ FFMPEG FINISHED SUCCESSFULLY")
-    logger.info("  Operation: %s", description)
-    logger.info("  Started: %s", start_str)
-    logger.info("  Finished: %s", end_str)
-    logger.info("  ⏱️ Duration: %.2f seconds", elapsed)
-    logger.info("  Exit code: 0")
-    logger.info("=" * 70)
+    # Only log completion for major operations
+    if is_major:
+        logger.info("✓ FFmpeg done: %s (%.2fs)", description, elapsed)

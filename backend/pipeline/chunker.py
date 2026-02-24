@@ -34,13 +34,24 @@ def _is_sentence_end(word: str) -> bool:
 def chunk_segments(
     segments: list[Segment],
     min_duration: float = MIN_SEGMENT_DURATION,
+    silence_threshold: float = 0.5,
+    max_segment_duration: float = 8.0,
 ) -> list[Segment]:
     """
     Re-chunk a list of segments into sentence-aligned segments.
 
     Input segments may span multiple sentences or start mid-sentence.
     This function uses word-level timestamps to find sentence boundaries
-    and produces new Segment objects aligned to complete sentences.
+    and natural pauses (silence gaps) to create segments.
+    
+    Args:
+        segments: Input segments from Whisper
+        min_duration: Minimum segment duration (merge shorter ones)
+        silence_threshold: Gap threshold for splitting (seconds)
+        max_segment_duration: Force split if segment exceeds this duration
+    
+    Returns:
+        List of re-chunked segments with natural boundaries
     """
     # Flatten all words from all segments into one ordered list
     all_words: list[WordToken] = []
@@ -49,10 +60,12 @@ def chunk_segments(
         all_words.extend(seg.words)
 
     if not all_words:
-        return segments  # nothing to do
+        # ONNX fallback: chunk by text only (no word timestamps)
+        print(f"⚠️  No word-level timestamps - using text-based chunking")
+        return _chunk_by_text_only(segments, min_duration)
 
     # Find sentence boundary indices (index of last word in each sentence)
-    boundary_indices = _find_boundaries(all_words)
+    boundary_indices = _find_boundaries(all_words, silence_threshold, max_segment_duration)
 
     # Build new segments from boundaries
     new_segments = _build_from_boundaries(all_words, boundary_indices, source)
@@ -63,32 +76,71 @@ def chunk_segments(
     return new_segments
 
 
-def _find_boundaries(words: list[WordToken]) -> list[int]:
+def _find_boundaries(
+    words: list[WordToken],
+    silence_threshold: float = 0.5,
+    max_segment_duration: float = 8.0,
+) -> list[int]:
     """
-    Return a list of indices (into words) where sentences end.
+    Return a list of indices (into words) where segments should end.
 
-    Prefer high-confidence boundary words.
-    Always include the last word as a boundary.
+    Uses multiple strategies to find natural boundaries:
+    1. High-confidence sentence endings (. ! ? with confidence > 0.8)
+    2. Timing gaps between words (silence > threshold)
+    3. Maximum segment duration (force split if too long)
+    
+    Args:
+        words: List of word tokens with timestamps
+        silence_threshold: Minimum gap to consider as silence (seconds)
+        max_segment_duration: Maximum segment length before forced split
+    
+    Returns:
+        Sorted list of word indices where segments should end
     """
-    boundaries: list[int] = []
+    boundaries: set[int] = set()
+    last_idx = len(words) - 1
 
-    # First pass: high-confidence sentence ends
+    # Strategy 1: High-confidence sentence endings
     for i, w in enumerate(words):
         if _is_sentence_end(w.word) and w.confidence >= HIGH_CONFIDENCE:
-            boundaries.append(i)
+            boundaries.add(i)
 
-    # If no high-confidence boundaries, fall back to any punctuation
+    # Strategy 2: Timing gaps (silence detection)
+    for i in range(len(words) - 1):
+        gap = words[i + 1].start - words[i].end
+        if gap >= silence_threshold:
+            # Found a silence gap - mark as boundary
+            boundaries.add(i)
+
+    # Strategy 3: Maximum duration enforcement
+    # Track current segment duration and force split if too long
+    segment_start = 0
+    for i in range(len(words)):
+        if i > 0:
+            duration = words[i].end - words[segment_start].start
+            if duration >= max_segment_duration:
+                # Segment too long - find nearest boundary
+                # Prefer sentence end or silence gap
+                for j in range(i - 1, segment_start, -1):
+                    if j in boundaries:
+                        segment_start = j + 1
+                        break
+                else:
+                    # No natural boundary found - force split here
+                    boundaries.add(i)
+                    segment_start = i + 1
+
+    # If no boundaries found, fall back to any punctuation
     if not boundaries:
         for i, w in enumerate(words):
             if _is_sentence_end(w.word):
-                boundaries.append(i)
+                boundaries.add(i)
 
     # Always end at the last word
-    last_idx = len(words) - 1
-    if not boundaries or boundaries[-1] != last_idx:
-        boundaries.append(last_idx)
+    boundaries.add(last_idx)
 
-    return boundaries
+    # Return sorted list
+    return sorted(boundaries)
 
 
 def _build_from_boundaries(
@@ -159,6 +211,96 @@ def _merge_short(
             result.append(seg)
 
     return result
+
+
+def _chunk_by_text_only(
+    segments: list[Segment],
+    min_duration: float,
+) -> list[Segment]:
+    """
+    Fallback chunking for ONNX Whisper (no word-level timestamps).
+    
+    Splits segments by sentence boundaries using text punctuation.
+    Estimates timing by distributing segment duration proportionally.
+    
+    Args:
+        segments: Input segments with chunk-level timestamps only
+        min_duration: Minimum segment duration (merge shorter ones)
+    
+    Returns:
+        List of sentence-aligned segments
+    """
+    result_segments = []
+    
+    for seg in segments:
+        if not seg.text or not seg.text.strip():
+            result_segments.append(seg)
+            continue
+        
+        # Split text by sentence-ending punctuation
+        sentences = re.split(r'([.!?]+)', seg.text)
+        
+        # Reconstruct sentences with their punctuation
+        sentence_texts = []
+        i = 0
+        while i < len(sentences):
+            text = sentences[i].strip()
+            if not text:
+                i += 1
+                continue
+            
+            # Add punctuation if next element is punctuation
+            if i + 1 < len(sentences) and sentences[i + 1].strip() in '.!?':
+                text += sentences[i + 1]
+                i += 2
+            else:
+                i += 1
+            
+            if text:
+                sentence_texts.append(text)
+        
+        # If no sentence splits found, keep original segment
+        if len(sentence_texts) <= 1:
+            result_segments.append(seg)
+            continue
+        
+        # Estimate timing by word count (proportional distribution)
+        total_words = sum(len(s.split()) for s in sentence_texts)
+        current_time = seg.start
+        
+        for sentence_text in sentence_texts:
+            # Estimate duration based on word count proportion
+            word_count = len(sentence_text.split())
+            if total_words > 0:
+                proportion = word_count / total_words
+                estimated_duration = seg.duration * proportion
+            else:
+                estimated_duration = seg.duration / len(sentence_texts)
+            
+            sentence_end = current_time + estimated_duration
+            
+            # Create new segment for this sentence
+            new_seg = Segment(
+                id=f"seg_{uuid.uuid4().hex[:8]}",
+                start=current_time,
+                end=sentence_end,
+                duration=estimated_duration,
+                text=sentence_text.strip(),
+                words=[],  # No word-level data
+                speaker=seg.speaker,
+                source=seg.source,
+                chroma_id="",
+            )
+            
+            result_segments.append(new_seg)
+            current_time = sentence_end
+    
+    # Merge segments shorter than min_duration
+    result_segments = _merge_short(result_segments, min_duration)
+    
+    print(f"✓ Text-based chunking: {len(segments)} → {len(result_segments)} segments")
+    
+    return result_segments
 
 
 def find_word_boundary(

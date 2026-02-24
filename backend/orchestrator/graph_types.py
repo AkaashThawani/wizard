@@ -11,6 +11,7 @@ SSE reconnection support.
 from typing import TypedDict, Annotated, Sequence, Literal
 from dataclasses import dataclass
 from operator import add
+from langgraph.graph import add_messages
 
 
 class AgentState(TypedDict):
@@ -57,6 +58,17 @@ class AgentState(TypedDict):
     success: bool
     error: Annotated[list[str], add] | None  # Collects errors from parallel nodes
     summary: str | None
+
+
+class ChatState(TypedDict):
+    """
+    State for chat workflow using LangGraph ReAct agent.
+    
+    This is a simplified state for the ReAct agent pattern, which
+    manages its own conversation history via the messages field.
+    """
+    messages: Annotated[list, add_messages]  # LangGraph message management
+    project_id: str
 
 
 @dataclass
