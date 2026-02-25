@@ -367,3 +367,44 @@ def _get_collection(state):
         metadata={"hnsw:space": "cosine"},
     )
     return collection
+
+
+def clear_collection(state):
+    """
+    Clear the ChromaDB collection for this project.
+    
+    Called when re-transcribing to remove old embeddings.
+    Deletes and recreates the collection.
+    """
+    import chromadb
+    
+    chroma_path = str(state.chroma_dir / "text")
+    
+    # Skip if chroma directory doesn't exist
+    if not Path(chroma_path).exists():
+        logger.info("ChromaDB directory doesn't exist, nothing to clear")
+        return
+    
+    try:
+        client = chromadb.PersistentClient(path=chroma_path)
+        
+        # Check if collection exists
+        try:
+            collection = client.get_collection(name="text")
+            count = collection.count()
+            logger.info("Deleting ChromaDB collection (had %d vectors)", count)
+            client.delete_collection(name="text")
+        except Exception:
+            # Collection doesn't exist, that's fine
+            logger.info("ChromaDB collection doesn't exist, nothing to delete")
+        
+        # Recreate empty collection
+        client.get_or_create_collection(
+            name="text",
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info("✓ ChromaDB collection cleared and recreated")
+        
+    except Exception as e:
+        logger.warning("Failed to clear ChromaDB collection: %s", e)
+        # Non-fatal - continue with transcription

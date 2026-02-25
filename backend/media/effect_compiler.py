@@ -36,12 +36,17 @@ def _seg_get(seg, key, default=None):
 
 
 def _get_font_path() -> str:
-    """Get a valid font path for drawtext on any platform."""
+    """
+    Get a valid font path for drawtext.
+    
+    Since we use -filter_complex_script (file-based), NO escaping is needed.
+    The path is written to a file, not passed via shell arguments.
+    """
     system = platform.system()
     
     if system == "Windows":
         font_candidates = [
-            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/arial.ttf",      # Raw path - no escaping needed!
             "C:/Windows/Fonts/calibri.ttf",
             "C:/Windows/Fonts/verdana.ttf",
         ]
@@ -61,8 +66,8 @@ def _get_font_path() -> str:
 
     for path in font_candidates:
         if os.path.exists(path):
-            # Return forward slashes only, NO quotes, NO escaped colon
-            return path.replace("\\", "/")
+            # Return as-is - no escaping needed when using filter script file
+            return path.replace("\\", "/")  # Just normalize to forward slashes
 
     # Last resort - let FFmpeg find a font itself (may fail)
     logger.warning("No system font found, drawtext may fail")
@@ -71,15 +76,20 @@ def _get_font_path() -> str:
 
 def _escape_drawtext(text: str) -> str:
     """
-    Escape text for FFmpeg drawtext filter.
-    Order matters — escape backslash first, then special chars.
+    Escape text for drawtext filter when using -filter_complex_script (file-based).
+    
+    When using filter_complex_script, we only need to escape:
+    - Backslashes: \\
+    - Single quotes: \'
+    - Colons: \:
+    - Newlines: (replace with space)
+    
+    No need to escape commas, percent signs, or other special characters.
     """
-    text = text.replace("\\", "\\\\")      # backslash first
-    text = text.replace("'", "\u2019")     # replace apostrophe with curly quote (avoids quote hell)
-    text = text.replace("%", "\\%")        # percent signs
-    text = text.replace(":", "\\:")        # colons
-    # Commas and semicolons inside drawtext value DON'T need escaping
-    # when the whole filter value is NOT wrapped in quotes
+    text = text.replace("\\", "\\\\")   # Backslash first (must be first)
+    text = text.replace("'", "\\'")     # Single quotes
+    text = text.replace(":", "\\:")     # Colons
+    text = text.replace("\n", " ")      # Remove newlines
     return text
 
 
@@ -88,9 +98,11 @@ def _build_drawtext_filter(text: str) -> str:
     font_path = _get_font_path()
     escaped = _escape_drawtext(text)
     
-    parts = [
-        "drawtext",
-        f"fontfile={font_path}" if font_path else None,
+    # Build options list (will be joined with :)
+    options = []
+    if font_path:
+        options.append(f"fontfile={font_path}")
+    options += [
         f"text={escaped}",
         "fontsize=48",
         "fontcolor=white",
@@ -100,7 +112,10 @@ def _build_drawtext_filter(text: str) -> str:
         "boxcolor=black@0.6",
         "boxborderw=10",
     ]
-    return ":".join(p for p in parts if p is not None)
+    
+    # CRITICAL: drawtext= then options joined by :
+    # Result: drawtext=fontfile=path:text=value:fontsize=48:...
+    return "drawtext=" + ":".join(options)
 
 
 def compile(

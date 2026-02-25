@@ -325,6 +325,19 @@ class TranscriptionAgent(BaseAgent):
         from pipeline.enricher import enrich_segments
         from pipeline.vectorizer import vectorize_segments
 
+        # Check if this is a re-run (segments already exist)
+        if self.state.segment_count() > 0:
+            logger.info("=" * 70)
+            logger.info("⚠️  RE-TRANSCRIPTION DETECTED")
+            logger.info("  Existing segments: %d", self.state.segment_count())
+            logger.info("  Clearing all transcription data before re-run...")
+            logger.info("=" * 70)
+            
+            # Clear all old data before re-transcribing
+            self.state.clear_transcription_data()
+            
+            logger.info("✓ Old data cleared, starting fresh transcription")
+
         # Select model size (auto or manual)
         model_size_param = params.get("model_size") or self.config.get("whisper", {}).get("model_size") or "base"
         model_size = _select_model_size(model_size_param, self.config)

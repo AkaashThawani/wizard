@@ -98,6 +98,61 @@ class TimelineState:
             self._data["segment_pool"][seg.id] = segment_to_dict(seg)
         self.save()
 
+    def clear_transcription_data(self) -> None:
+        """
+        Clear all transcription-related data (for re-transcription).
+        
+        This allows re-running transcription without duplicating segments.
+        Clears:
+        - segment_pool (all segments)
+        - current sequence
+        - all agent layers (they reference old segment IDs)
+        - ChromaDB collection
+        - snapshots (they reference old sequences)
+        
+        Preserves:
+        - source info (video file path/duration)
+        - history (user prompts)
+        - errors log
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info("=" * 70)
+        logger.info("🗑️  CLEARING TRANSCRIPTION DATA")
+        logger.info("  Segments: %d → 0", len(self._data["segment_pool"]))
+        logger.info("  Sequence length: %d → 0", len(self._data["current"]["sequence"]))
+        logger.info("  Layers: %d agents → 0", len(self._data["layers"]))
+        logger.info("=" * 70)
+        
+        # Clear segment pool
+        self._data["segment_pool"] = {}
+        
+        # Clear sequence
+        self._data["current"]["sequence"] = []
+        self._data["current"]["snapshot_ref"] = None
+        
+        # Clear all agent layers (they reference old segment IDs)
+        self._data["layers"] = {}
+        
+        # Clear agent data (color/audio analysis results)
+        self._data["agent_data"] = {}
+        
+        # Clear snapshots (they reference old sequences)
+        self._data["snapshots"] = {}
+        
+        # Clear ChromaDB collection if it exists
+        try:
+            from pipeline.vectorizer import clear_collection
+            clear_collection(self)
+            logger.info("✓ ChromaDB collection cleared")
+        except Exception as e:
+            logger.warning("Failed to clear ChromaDB: %s", e)
+        
+        # Save cleared state
+        self.save()
+        logger.info("✓ Transcription data cleared successfully")
+
     def get_segment(self, segment_id: str) -> Segment | None:
         raw = self._data["segment_pool"].get(segment_id)
         if raw is None:
