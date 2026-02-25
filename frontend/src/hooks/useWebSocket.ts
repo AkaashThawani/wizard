@@ -15,7 +15,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = 'http://localhost:5000';
+const SOCKET_URL = 'http://localhost:5001';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -131,7 +131,7 @@ export const useWebSocket = (projectId?: string): UseWebSocketReturn => {
   const loadConversationHistory = useCallback(async (projectId: string) => {
     try {
       console.log('[WebSocket] Loading conversation history for:', projectId);
-      const response = await fetch(`http://localhost:5000/project/${projectId}/chat/history`);
+      const response = await fetch(`http://localhost:5001/project/${projectId}/chat/history`);
       
       if (!response.ok) {
         console.warn('[WebSocket] Failed to load history:', response.statusText);

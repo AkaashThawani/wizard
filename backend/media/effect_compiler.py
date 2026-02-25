@@ -20,6 +20,8 @@ Supported transitions:
 from __future__ import annotations
 
 import logging
+import os
+import platform
 from timeline.models import SequenceEntry
 from timeline.schema import EffectType, TransitionType
 
@@ -31,6 +33,74 @@ def _seg_get(seg, key, default=None):
     if isinstance(seg, dict):
         return seg.get(key, default)
     return getattr(seg, key, default)
+
+
+def _get_font_path() -> str:
+    """Get a valid font path for drawtext on any platform."""
+    system = platform.system()
+    
+    if system == "Windows":
+        font_candidates = [
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/calibri.ttf",
+            "C:/Windows/Fonts/verdana.ttf",
+        ]
+    elif system == "Darwin":  # macOS
+        font_candidates = [
+            "/Library/Fonts/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Arial.ttf",
+        ]
+    else:  # Linux
+        font_candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+
+    for path in font_candidates:
+        if os.path.exists(path):
+            # Return forward slashes only, NO quotes, NO escaped colon
+            return path.replace("\\", "/")
+
+    # Last resort - let FFmpeg find a font itself (may fail)
+    logger.warning("No system font found, drawtext may fail")
+    return ""
+
+
+def _escape_drawtext(text: str) -> str:
+    """
+    Escape text for FFmpeg drawtext filter.
+    Order matters — escape backslash first, then special chars.
+    """
+    text = text.replace("\\", "\\\\")      # backslash first
+    text = text.replace("'", "\u2019")     # replace apostrophe with curly quote (avoids quote hell)
+    text = text.replace("%", "\\%")        # percent signs
+    text = text.replace(":", "\\:")        # colons
+    # Commas and semicolons inside drawtext value DON'T need escaping
+    # when the whole filter value is NOT wrapped in quotes
+    return text
+
+
+def _build_drawtext_filter(text: str) -> str:
+    """Build a platform-independent drawtext filter string."""
+    font_path = _get_font_path()
+    escaped = _escape_drawtext(text)
+    
+    parts = [
+        "drawtext",
+        f"fontfile={font_path}" if font_path else None,
+        f"text={escaped}",
+        "fontsize=48",
+        "fontcolor=white",
+        "x=(w-text_w)/2",
+        "y=h-text_h-30",
+        "box=1",
+        "boxcolor=black@0.6",
+        "boxborderw=10",
+    ]
+    return ":".join(p for p in parts if p is not None)
 
 
 def compile(
@@ -174,7 +244,16 @@ def _build_segment_filters(
             continue
         etype = eff.get("type", "")
         params = eff.get("params", {})
-        if not isinstance(params, dict):
+        
+        # Parse params if it's a JSON string (LLM may serialize it)
+        if isinstance(params, str):
+            import json
+            try:
+                params = json.loads(params)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Effect params is invalid JSON string, using empty dict")
+                params = {}
+        elif not isinstance(params, dict):
             logger.warning("Effect params is not a dict (got %s), using empty dict", type(params))
             params = {}
 
@@ -215,15 +294,11 @@ def _build_segment_filters(
             if not text:
                 logger.warning("Caption effect has no text, skipping")
                 continue
-            # Escape special characters for FFmpeg
-            text = text.replace("'", "\\'").replace(":", "\\:")
-            v_filters.append(
-                f"drawtext=text='{text}':fontsize=24:fontcolor=white"
-                f":x=(w-text_w)/2:y=h-text_h-20:box=1:boxcolor=black@0.5"
-            )
+            v_filters.append(_build_drawtext_filter(text))
 
-    v_chain = f"{v_in}{','.join(v_filters) if v_filters else 'null'}{v_out}"
-    a_chain = f"{a_in}{','.join(a_filters) if a_filters else 'anull'}{a_out}"
+    # Use copy/acopy for passthrough instead of null/anull (more compatible)
+    v_chain = f"{v_in}{','.join(v_filters) if v_filters else 'copy'}{v_out}"
+    a_chain = f"{a_in}{','.join(a_filters) if a_filters else 'acopy'}{a_out}"
 
     return v_chain, a_chain
 

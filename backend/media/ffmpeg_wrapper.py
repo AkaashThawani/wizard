@@ -284,20 +284,22 @@ def _run(cmd: list[str], description: str = "") -> None:
     if result.returncode != 0:
         logger.error("✗ FFmpeg failed: %s (%.2fs)", description, elapsed)
         
-        # Show only the LAST part of stderr (actual errors, not version info)
-        # FFmpeg errors are always at the end
-        error_output = result.stderr[-1500:]  # Last 1500 chars = actual error
+        # Extract actual error lines (skip banner/build info)
+        # Banner lines start with spaces or contain "built with", "configuration"
+        error_lines = [
+            line for line in result.stderr.splitlines()
+            if not line.startswith(" ") 
+            and line.strip()
+            and "built with" not in line.lower()
+            and "configuration" not in line.lower()
+            and "fontconfig error" not in line.lower()
+        ]
         
-        # Remove fontconfig lines if present
-        if 'Fontconfig error' in error_output:
-            lines = error_output.split('\n')
-            lines = [l for l in lines if 'Fontconfig error' not in l]
-            error_output = '\n'.join(lines)
+        # Get last 20 error lines (actual errors)
+        actual_error = "\n".join(error_lines[-20:]) if error_lines else result.stderr[-1000:]
         
-        logger.error("Error: %s", error_output)
-        raise RuntimeError(
-            f"FFmpeg failed [{description}]:\n{error_output}"
-        )
+        logger.error("Actual error:\n%s", actual_error)
+        raise RuntimeError(f"FFmpeg failed [{description}]:\n{actual_error}")
     
     # Only log completion for major operations
     if is_major:

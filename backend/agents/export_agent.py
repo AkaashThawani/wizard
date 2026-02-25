@@ -38,7 +38,10 @@ class ExportAgent(BaseAgent):
                 name="export_export",
                 description=(
                     "Export the current timeline to an MP4 file at source resolution. "
-                    "Returns the path of the exported file."
+                    "Returns the path of the exported file. "
+                    "IMPORTANT: After calling this tool, you MUST tell the user the full output_path "
+                    "where the file was saved, not just the file size. "
+                    "Example: 'Export complete! File saved to: D:\\wizard\\projects\\abc123\\exports\\export_full.mp4'"
                 ),
                 parameters={
                     "type": "object",

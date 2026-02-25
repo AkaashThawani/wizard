@@ -7,6 +7,10 @@
 # Project data (large, user-specific)
 projects/
 
+# Downloaded models (auto-downloaded by setup.py)
+backend/models/whisper-base-onnx/
+backend/models/clip-vit-base-patch32-onnx/
+
 # Python
 __pycache__/
 *.py[cod]

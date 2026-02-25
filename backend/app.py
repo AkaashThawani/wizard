@@ -1050,7 +1050,7 @@ def warmup_models():
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5001))
     debug = True  # Always enable debug mode for auto-reload
     logger.info("Wizard starting on http://localhost:%d (debug=%s, auto-reload enabled)", port, debug)
     
