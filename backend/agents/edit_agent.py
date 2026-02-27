@@ -330,8 +330,8 @@ class EditAgent(BaseAgent):
 
     async def _trim_segment(self, params: dict) -> ToolResult:
         segment_id = params.get("segment_id")
-        start_offset = float(params.get("start_offset", 0.0))
-        end_offset = float(params.get("end_offset", 0.0))
+        start_offset = float(params.get("start_offset") or 0.0)
+        end_offset = float(params.get("end_offset") or 0.0)
 
         if not segment_id:
             return ToolResult(success=False, data={}, error="segment_id is required")

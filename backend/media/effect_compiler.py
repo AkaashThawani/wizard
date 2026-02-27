@@ -37,40 +37,44 @@ def _seg_get(seg, key, default=None):
 
 def _get_font_path() -> str:
     """
-    Get a valid font path for drawtext.
+    Get bundled font path (cross-platform, no system dependencies).
     
-    Since we use -filter_complex_script (file-based), NO escaping is needed.
-    The path is written to a file, not passed via shell arguments.
+    Uses Arial font bundled in backend/media/fonts/ directory.
+    This avoids all platform-specific font path issues and escaping problems.
     """
-    system = platform.system()
+    from pathlib import Path
     
+    # Get bundled font (relative to this file)
+    font_path = Path(__file__).parent / "fonts" / "arial.ttf"
+    
+    if font_path.exists():
+        # Get absolute path with forward slashes
+        path_str = str(font_path.resolve()).replace("\\", "/")
+        
+        # CRITICAL: Escape colon in Windows drive letter (D:/ → D\:/)
+        # FFmpeg filter parser uses : as option separator
+        # This is safe on Linux/Mac (paths don't have colons)
+        if len(path_str) > 2 and path_str[1] == ":":
+            path_str = path_str.replace(":/", "\\:/", 1)
+        
+        return path_str
+    
+    # Fallback: try system fonts if bundled font is missing
+    logger.warning("Bundled font not found, falling back to system fonts")
+    
+    system = platform.system()
     if system == "Windows":
-        font_candidates = [
-            "C:/Windows/Fonts/arial.ttf",      # Raw path - no escaping needed!
-            "C:/Windows/Fonts/calibri.ttf",
-            "C:/Windows/Fonts/verdana.ttf",
-        ]
-    elif system == "Darwin":  # macOS
-        font_candidates = [
-            "/Library/Fonts/Arial.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/System/Library/Fonts/Arial.ttf",
-        ]
-    else:  # Linux
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        ]
-
-    for path in font_candidates:
+        candidates = ["C:/Windows/Fonts/arial.ttf"]
+    elif system == "Darwin":
+        candidates = ["/Library/Fonts/Arial.ttf"]
+    else:
+        candidates = ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+    
+    for path in candidates:
         if os.path.exists(path):
-            # Return as-is - no escaping needed when using filter script file
-            return path.replace("\\", "/")  # Just normalize to forward slashes
-
-    # Last resort - let FFmpeg find a font itself (may fail)
-    logger.warning("No system font found, drawtext may fail")
+            return path.replace("\\", "/")
+    
+    logger.error("No font found (bundled or system), drawtext will fail")
     return ""
 
 
@@ -78,17 +82,20 @@ def _escape_drawtext(text: str) -> str:
     """
     Escape text for drawtext filter when using -filter_complex_script (file-based).
     
-    When using filter_complex_script, we only need to escape:
+    Required escapes for FFmpeg drawtext filter:
     - Backslashes: \\
     - Single quotes: \'
     - Colons: \:
+    - Brackets: \[ and \] (interpreted as stream labels)
+    - Percent signs: %% (prevent expression expansion)
     - Newlines: (replace with space)
-    
-    No need to escape commas, percent signs, or other special characters.
     """
     text = text.replace("\\", "\\\\")   # Backslash first (must be first)
     text = text.replace("'", "\\'")     # Single quotes
     text = text.replace(":", "\\:")     # Colons
+    text = text.replace("[", "\\[")     # Left bracket
+    text = text.replace("]", "\\]")     # Right bracket
+    text = text.replace("%", "%%")      # Percent signs (prevent expression expansion)
     text = text.replace("\n", " ")      # Remove newlines
     return text
 
@@ -101,9 +108,14 @@ def _build_drawtext_filter(text: str) -> str:
     # Build options list (will be joined with :)
     options = []
     if font_path:
-        options.append(f"fontfile={font_path}")
+        # CRITICAL: Quote the fontfile path for extra safety
+        # Handles paths with spaces and provides additional protection
+        options.append(f"fontfile='{font_path}'")
+    else:
+        logger.error("Font path is empty - drawtext will likely fail")
+    
     options += [
-        f"text={escaped}",
+        f"text='{escaped}'",  # Quote the text value to handle spaces
         "fontsize=48",
         "fontcolor=white",
         "x=(w-text_w)/2",
@@ -113,9 +125,14 @@ def _build_drawtext_filter(text: str) -> str:
         "boxborderw=10",
     ]
     
+    # Filter out any empty options to prevent "No such filter: ''" errors
+    options = [opt for opt in options if opt]
+    
     # CRITICAL: drawtext= then options joined by :
-    # Result: drawtext=fontfile=path:text=value:fontsize=48:...
-    return "drawtext=" + ":".join(options)
+    # Result: drawtext=fontfile='path':text='value':fontsize=48:...
+    result = "drawtext=" + ":".join(options)
+    logger.debug("Built drawtext filter: %s", result[:100] + "..." if len(result) > 100 else result)
+    return result
 
 
 def compile(
@@ -272,48 +289,70 @@ def _build_segment_filters(
             logger.warning("Effect params is not a dict (got %s), using empty dict", type(params))
             params = {}
 
-        if etype == EffectType.VOLUME:
+        # Normalize effect type - handle both string and enum
+        if isinstance(etype, EffectType):
+            etype_str = etype.value
+        elif isinstance(etype, str):
+            etype_str = etype
+        else:
+            logger.warning("Effect type is neither string nor enum (got %s), skipping", type(etype))
+            continue
+
+        if etype_str == EffectType.VOLUME.value:
             level = float(params.get("level", 1.0))
             a_filters.append(f"volume={level}")
 
-        elif etype == EffectType.MUTE:
+        elif etype_str == EffectType.MUTE.value:
             a_filters.append("volume=0")
 
-        elif etype == EffectType.FADE_IN:
+        elif etype_str == EffectType.FADE_IN.value:
             d = float(params.get("duration_s", 0.5))
             v_filters.append(f"fade=t=in:st=0:d={d}")
             a_filters.append(f"afade=t=in:st=0:d={d}")
 
-        elif etype == EffectType.FADE_OUT:
+        elif etype_str == EffectType.FADE_OUT.value:
             d = float(params.get("duration_s", 0.5))
             fade_start = max(0.0, duration - d)
             v_filters.append(f"fade=t=out:st={fade_start:.3f}:d={d}")
             a_filters.append(f"afade=t=out:st={fade_start:.3f}:d={d}")
 
-        elif etype == EffectType.SPEED:
+        elif etype_str == EffectType.SPEED.value:
             factor = float(params.get("factor", 1.0))
             if factor != 1.0:
                 v_filters.append(f"setpts={1.0/factor:.4f}*PTS")
                 # atempo only supports 0.5-2.0, chain multiple for extreme values
                 a_filters.extend(_build_atempo(factor))
 
-        elif etype == EffectType.CROP:
+        elif etype_str == EffectType.CROP.value:
             x = params.get("x", 0)
             y = params.get("y", 0)
             w = params.get("w", 1280)
             h = params.get("h", 720)
             v_filters.append(f"crop={w}:{h}:{x}:{y}")
 
-        elif etype == EffectType.CAPTION:
+        elif etype_str == EffectType.CAPTION.value:
             text = str(params.get("text", "")).strip()
             if not text:
                 logger.warning("Caption effect has no text, skipping")
                 continue
             v_filters.append(_build_drawtext_filter(text))
 
-    # Use copy/acopy for passthrough instead of null/anull (more compatible)
-    v_chain = f"{v_in}{','.join(v_filters) if v_filters else 'copy'}{v_out}"
-    a_chain = f"{a_in}{','.join(a_filters) if a_filters else 'acopy'}{a_out}"
+    # Build filter chains (use null/anull for passthrough)
+    # CRITICAL: Filter out any empty strings to prevent "No such filter: ''" errors
+    v_filters = [f.strip() for f in v_filters if f and f.strip()]
+    a_filters = [f.strip() for f in a_filters if f and f.strip()]
+    
+    if v_filters:
+        v_chain = f"{v_in},{','.join(v_filters)}{v_out}"
+    else:
+        # Use null filter for passthrough (required - can't have empty filter)
+        v_chain = f"{v_in}null{v_out}"
+    
+    if a_filters:
+        a_chain = f"{a_in},{','.join(a_filters)}{a_out}"
+    else:
+        # Use anull filter for passthrough (required - can't have empty filter)
+        a_chain = f"{a_in}anull{a_out}"
 
     return v_chain, a_chain
 

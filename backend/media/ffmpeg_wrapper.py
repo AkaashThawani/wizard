@@ -19,6 +19,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Module-level encoder cache (avoid repeated ffmpeg -encoders calls)
+_encoder_cache = None
+
 
 def detect_encoder() -> str:
     """
@@ -29,22 +32,32 @@ def detect_encoder() -> str:
       "h264_nvenc"         — Windows/Linux with NVIDIA GPU
       "libx264"            — software fallback (always available)
     """
+    global _encoder_cache
+    
+    # Return cached result if available
+    if _encoder_cache is not None:
+        return _encoder_cache
+    
     ffmpeg = _ffmpeg_path()
     if ffmpeg is None:
-        return "libx264"
+        _encoder_cache = "libx264"
+        return _encoder_cache
 
     system = platform.system()
 
     if system == "Darwin":
         # VideoToolbox is always available on Mac with FFmpeg
         if _encoder_available(ffmpeg, "h264_videotoolbox"):
-            return "h264_videotoolbox"
+            _encoder_cache = "h264_videotoolbox"
+            return _encoder_cache
 
     # Check for NVIDIA NVENC (Windows/Linux)
     if _encoder_available(ffmpeg, "h264_nvenc"):
-        return "h264_nvenc"
+        _encoder_cache = "h264_nvenc"
+        return _encoder_cache
 
-    return "libx264"
+    _encoder_cache = "libx264"
+    return _encoder_cache
 
 
 def cut(
@@ -133,7 +146,8 @@ def export(
             logger.info("📄 Filter complex written to temp file: %s", fc_file)
             logger.debug("Filter content (%d chars): %s", len(fc), fc[:200] + "..." if len(fc) > 200 else fc)
             
-            cmd += ["-filter_complex_script", fc_file]
+            # Use -/filter_complex instead of deprecated -filter_complex_script
+            cmd += ["-/filter_complex", fc_file]
             if final_video:
                 cmd += ["-map", final_video]
             if final_audio:
@@ -290,10 +304,11 @@ def _run(cmd: list[str], description: str = "") -> None:
     # Start timing
     start_time = time.time()
     
-    # Set environment to suppress fontconfig warnings on Windows
+    # Set environment to suppress fontconfig warnings (Windows only)
     env = os.environ.copy()
-    env["FONTCONFIG_FILE"] = "NUL"  # Suppress fontconfig warnings
-    env["FONTCONFIG_PATH"] = "NUL"
+    if platform.system() == "Windows":
+        env["FONTCONFIG_FILE"] = "NUL"  # Suppress fontconfig warnings
+        env["FONTCONFIG_PATH"] = "NUL"
     
     result = subprocess.run(
         cmd,
