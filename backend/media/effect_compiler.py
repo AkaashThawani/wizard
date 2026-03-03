@@ -249,6 +249,16 @@ def compile(
 
     filter_complex = ";".join(f for f in filter_lines if f)
 
+    logger.info("=" * 70)
+    logger.info("🎯 FINAL FILTER_COMPLEX (%d chars):", len(filter_complex))
+    logger.info("=" * 70)
+    # Log each filter on a separate line for readability
+    for i, line in enumerate(filter_lines, 1):
+        logger.info("  [%d] %s", i, line if line else "<EMPTY>")
+    logger.info("=" * 70)
+    logger.info("🎬 Joined filter_complex: %s", filter_complex[:500] + "..." if len(filter_complex) > 500 else filter_complex)
+    logger.info("=" * 70)
+
     return {
         "inputs": inputs,
         "filter_complex": filter_complex,
@@ -268,6 +278,7 @@ def _build_segment_filters(
     duration: float,
 ) -> tuple[str, str]:
     """Build filter chains for a single segment. Returns (v_chain, a_chain)."""
+    logger.info("🔧 Building filters for %s → %s (duration=%.2fs, %d effects)", v_in, v_out, duration, len(effects))
     v_filters: list[str] = []
     a_filters: list[str] = []
 
@@ -342,18 +353,23 @@ def _build_segment_filters(
     v_filters = [f.strip() for f in v_filters if f and f.strip()]
     a_filters = [f.strip() for f in a_filters if f and f.strip()]
     
+    logger.info("  📹 Video filters: %d filters = %s", len(v_filters), v_filters)
+    logger.info("  🔊 Audio filters: %d filters = %s", len(a_filters), a_filters)
+    
     if v_filters:
-        v_chain = f"{v_in},{','.join(v_filters)}{v_out}"
+        v_chain = f"{v_in}{','.join(v_filters)}{v_out}"
     else:
         # Use null filter for passthrough (required - can't have empty filter)
         v_chain = f"{v_in}null{v_out}"
     
     if a_filters:
-        a_chain = f"{a_in},{','.join(a_filters)}{a_out}"
+        a_chain = f"{a_in}{','.join(a_filters)}{a_out}"
     else:
         # Use anull filter for passthrough (required - can't have empty filter)
         a_chain = f"{a_in}anull{a_out}"
 
+    logger.info("  ✅ V_CHAIN: %s", v_chain)
+    logger.info("  ✅ A_CHAIN: %s", a_chain)
     return v_chain, a_chain
 
 
@@ -381,6 +397,7 @@ def _build_transitions(
     durations: list[float],
 ) -> tuple[list[str], str, str]:
     """Build transition filters between segments."""
+    logger.info("🎬 Building transitions for %d segments", len(video_labels))
     filter_lines: list[str] = []
 
     if not video_labels:
@@ -416,24 +433,27 @@ def _build_transitions(
             xfade_mode = "dissolve" if transition.type == TransitionType.DISSOLVE else "fade"
             offset = max(0.0, timeline_duration - d)
 
-            filter_lines.append(
-                f"{current_v}{v2}xfade=transition={xfade_mode}:duration={d:.3f}:offset={offset:.3f}{out_v}"
-            )
-            filter_lines.append(
-                f"{current_a}{a2}acrossfade=d={d:.3f}{out_a}"
-            )
+            v_line = f"{current_v}{v2}xfade=transition={xfade_mode}:duration={d:.3f}:offset={offset:.3f}{out_v}"
+            a_line = f"{current_a}{a2}acrossfade=d={d:.3f}{out_a}"
+            logger.info("  🔀 Transition %d: %s (xfade)", i, transition.type)
+            logger.info("    V: %s", v_line)
+            logger.info("    A: %s", a_line)
+            filter_lines.append(v_line)
+            filter_lines.append(a_line)
             timeline_duration = timeline_duration + durations[i] - d
         else:
             # Plain cut via concat
-            filter_lines.append(
-                f"{current_v}{v2}concat=n=2:v=1:a=0{out_v}"
-            )
-            filter_lines.append(
-                f"{current_a}{a2}concat=n=2:v=0:a=1{out_a}"
-            )
+            v_line = f"{current_v}{v2}concat=n=2:v=1:a=0{out_v}"
+            a_line = f"{current_a}{a2}concat=n=2:v=0:a=1{out_a}"
+            logger.info("  ✂️ Transition %d: CUT (concat)", i)
+            logger.info("    V: %s", v_line)
+            logger.info("    A: %s", a_line)
+            filter_lines.append(v_line)
+            filter_lines.append(a_line)
             timeline_duration += durations[i]
 
         current_v = out_v
         current_a = out_a
 
+    logger.info("  ✅ Final video: %s, Final audio: %s", current_v, current_a)
     return filter_lines, current_v, current_a

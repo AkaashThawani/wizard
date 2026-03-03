@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import uuid
 import warnings
@@ -142,6 +143,27 @@ socketio = SocketIO(
 
 
 # ------------------------------------------------------------------
+# Utility: Remove emojis from text
+# ------------------------------------------------------------------
+
+def _remove_emojis(text: str) -> str:
+    """Remove emojis and special Unicode characters from text."""
+    # Emoji pattern covers most emojis
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub('', text).strip()
+
+
+# ------------------------------------------------------------------
 # Helper: get or create project context
 # ------------------------------------------------------------------
 
@@ -224,8 +246,33 @@ def _create_project_context(project_id: str) -> dict:
     sse_q: queue.Queue = queue.Queue()
 
     def progress_callback(event: str, data: dict) -> None:
+        # Always add to SSE queue
         payload = json.dumps({"event": event, "data": data})
         sse_q.put_nowait(payload)
+        
+        # Filter and forward user-facing progress events to WebSocket
+        progress_events = [
+            'transcription_start', 'transcription_done',
+            'analysis_start', 'analysis_done',
+            'stage', 'prompt_start', 'prompt_done'
+        ]
+        
+        if event in progress_events:
+            # Remove emojis from messages
+            clean_data = data.copy()
+            if 'message' in clean_data:
+                clean_data['message'] = _remove_emojis(clean_data['message'])
+            if 'stage' in clean_data:
+                clean_data['stage'] = _remove_emojis(clean_data['stage'])
+            if 'summary' in clean_data:
+                clean_data['summary'] = _remove_emojis(clean_data['summary'])
+            
+            # Emit to WebSocket for real-time UI updates
+            socketio.emit('progress_update', {
+                'event': event,
+                'data': clean_data,
+                'project_id': project_id
+            }, to=project_id)
 
     state = TimelineState(project_id, projects_dir=str(PROJECTS_DIR))
 
@@ -310,7 +357,7 @@ def upload_video(project_id: str):
         
         def transcribe_and_analyze_async():
             """
-            2-phase workflow: Transcription → Analysis
+            2-phase workflow: Transcription -> Analysis
             
             Phase 1: Transcription (sequential - must complete first)
             Phase 2: Color + Audio analysis (parallel - need segments from phase 1)

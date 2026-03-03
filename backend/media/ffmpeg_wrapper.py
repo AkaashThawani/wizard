@@ -123,67 +123,46 @@ def export(
             "-i", inp["path"],
         ]
 
-    fc_file = None
-    try:
-        if filter_complex:
-            # Write filter_complex to temp file to avoid shell escaping issues
-            # This completely bypasses command-line escaping problems with:
-            # - Windows drive letters (C:)
-            # - Special characters (quotes, colons, commas)
-            # - Unicode text
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.txt', delete=False, encoding='utf-8'
-            ) as f:
-                # Add scaling to filter_complex if needed
-                fc = filter_complex
-                if resolution == "preview" and final_video:
-                    fc += f";{final_video}scale=-2:720[vout_scaled]"
-                    final_video = "[vout_scaled]"
-                
-                f.write(fc)
-                fc_file = f.name
-            
-            logger.info("📄 Filter complex written to temp file: %s", fc_file)
-            logger.debug("Filter content (%d chars): %s", len(fc), fc[:200] + "..." if len(fc) > 200 else fc)
-            
-            # Use -/filter_complex instead of deprecated -filter_complex_script
-            cmd += ["-/filter_complex", fc_file]
-            if final_video:
-                cmd += ["-map", final_video]
-            if final_audio:
-                cmd += ["-map", final_audio]
-        else:
-            # Simple case: single input, no filters
-            cmd += ["-map", "0:v?", "-map", "0:a?"]
-            
-            # Resolution scaling for preview (only when not using filter_complex)
-            if resolution == "preview":
-                cmd += ["-vf", "scale=-2:720"]
-
-        # Video codec
-        cmd += ["-c:v", encoder]
-        if encoder == "libx264":
-            cmd += ["-preset", "fast", "-crf", "22"]
-        elif encoder == "h264_nvenc":
-            # NVIDIA GPU encoder - use fast preset for speed
-            cmd += ["-preset", "fast", "-b:v", "3M"]  # Lower bitrate for faster encoding
-        elif encoder == "h264_videotoolbox":
-            cmd += ["-b:v", "5M"]
-
-        # Audio
-        cmd += ["-c:a", "aac", "-b:a", "192k"]
-
-        cmd.append(output_path)
-        _run(cmd, description=f"export → {Path(output_path).name}")
+    if filter_complex:
+        # Add scaling to filter_complex if needed
+        fc = filter_complex
+        if resolution == "preview" and final_video:
+            fc += f";{final_video},scale=-2:720[vout_scaled]"
+            final_video = "[vout_scaled]"
         
-    finally:
-        # Clean up temp filter file
-        if fc_file and os.path.exists(fc_file):
-            try:
-                os.unlink(fc_file)
-                logger.debug("✓ Cleaned up filter script file: %s", fc_file)
-            except OSError as e:
-                logger.warning("Failed to delete temp filter file %s: %s", fc_file, e)
+        logger.info("📊 Using filter_complex (%d chars)", len(fc))
+        logger.debug("Filter content: %s", fc[:200] + "..." if len(fc) > 200 else fc)
+        
+        # Use inline filter_complex (standard FFmpeg approach)
+        # Python's subprocess automatically handles special characters when passed as list
+        cmd += ["-filter_complex", fc]
+        if final_video:
+            cmd += ["-map", final_video]
+        if final_audio:
+            cmd += ["-map", final_audio]
+    else:
+        # Simple case: single input, no filters
+        cmd += ["-map", "0:v?", "-map", "0:a?"]
+        
+        # Resolution scaling for preview (only when not using filter_complex)
+        if resolution == "preview":
+            cmd += ["-vf", "scale=-2:720"]
+
+    # Video codec
+    cmd += ["-c:v", encoder]
+    if encoder == "libx264":
+        cmd += ["-preset", "fast", "-crf", "22"]
+    elif encoder == "h264_nvenc":
+        # NVIDIA GPU encoder - use fast preset for speed
+        cmd += ["-preset", "fast", "-b:v", "3M"]  # Lower bitrate for faster encoding
+    elif encoder == "h264_videotoolbox":
+        cmd += ["-b:v", "5M"]
+
+    # Audio
+    cmd += ["-c:a", "aac", "-b:a", "192k"]
+
+    cmd.append(output_path)
+    _run(cmd, description=f"export → {Path(output_path).name}")
 
 
 def extract_frame(
@@ -299,7 +278,16 @@ def _run(cmd: list[str], description: str = "") -> None:
     if is_major:
         full_cmd = " ".join(cmd)
         logger.info("🎬 FFmpeg: %s", description)
-        logger.debug("Command: %s", full_cmd)
+        print("=" * 100)
+        print("🔍 FFMPEG COMMAND:")
+        print("=" * 100)
+        print(f"Command list ({len(cmd)} args):")
+        for i, arg in enumerate(cmd):
+            print(f"  [{i}] {arg[:100]}{'...' if len(arg) > 100 else ''}")
+        print()
+        print("Joined command:")
+        print(full_cmd[:1000] + "..." if len(full_cmd) > 1000 else full_cmd)
+        print("=" * 100)
     
     # Start timing
     start_time = time.time()

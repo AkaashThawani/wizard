@@ -13,9 +13,48 @@ interface ChatInterfaceProps {
 }
 
 export const ChatInterface = ({ projectId }: ChatInterfaceProps) => {
-  const { connected, status, messages, sendMessage } = useWebSocket(projectId || undefined);
+  const { connected, status, messages, sendMessage, socket } = useWebSocket(projectId || undefined);
   const [input, setInput] = useState('');
+  const [progressStatus, setProgressStatus] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Listen for progress updates from backend
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleProgressUpdate = (data: { event: string; data: { stage?: string; status?: string; message?: string } }) => {
+      const event = data.event;
+      const eventData = data.data;
+
+      // Update progress status based on event type
+      if (event === 'transcription_start') {
+        setProgressStatus('Transcribing audio...');
+      } else if (event === 'transcription_done') {
+        setProgressStatus('Transcription complete');
+      } else if (event === 'analysis_start') {
+        setProgressStatus('Analyzing video...');
+      } else if (event === 'analysis_done') {
+        setProgressStatus('Analysis complete');
+      } else if (event === 'stage') {
+        const stage = eventData.stage || '';
+        const stageStatus = eventData.status || '';
+        if (stageStatus === 'done') {
+          setProgressStatus(`${stage} complete`);
+        } else {
+          setProgressStatus(stage);
+        }
+      } else if (event === 'prompt_done') {
+        // Will be cleared when status changes to idle
+        setTimeout(() => setProgressStatus(null), 500);
+      }
+    };
+
+    socket.on('progress_update', handleProgressUpdate);
+
+    return () => {
+      socket.off('progress_update', handleProgressUpdate);
+    };
+  }, [socket]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -99,14 +138,14 @@ export const ChatInterface = ({ projectId }: ChatInterfaceProps) => {
           ))
         )}
 
-        {/* Thinking indicator */}
+        {/* Thinking indicator with dynamic progress */}
         {status === 'thinking' && (
           <div className="rounded-2xl bg-[#1a1a1a] border border-[#2e2e2e] p-3 animate-pulse">
             <div className="mb-2 flex items-center gap-1.5 rounded-full bg-[#4a9eff]/10 px-2 py-0.5 text-xs font-medium text-[#4a9eff] w-fit">
-              🧙‍♂️ Wizard
+              Wizard
             </div>
             <div className="text-sm text-[#e8e8e8]">
-              <span>●●●</span> Thinking...
+              <span>●●●</span> {progressStatus || 'Thinking...'}
             </div>
           </div>
         )}

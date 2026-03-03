@@ -9,8 +9,7 @@ import { AppHeader } from './components/AppHeader';
 import { VideoPlayer } from './components/VideoPlayer';
 import { TimelinePanel } from './components/TimelinePanel';
 import { ChatInterface } from './components/ChatInterface';
-import { TranscriptionPanel } from './components/TranscriptionPanel';
-import { EditDecisionsPanel } from './components/EditDecisionsPanel';
+import { VideoPropertiesPanel } from './components/VideoPropertiesPanel';
 
 function App() {
   // Zustand store
@@ -213,22 +212,23 @@ function App() {
           />
         </div>
 
-        <div className="w-[350px] flex flex-col overflow-y-auto border-l border-[#2e2e2e] bg-[#141414]">
-          <div className="flex min-h-[40%] flex-col border-b border-[#2e2e2e]">
-            <ChatInterface projectId={projectId} />
+        {/* Expanded Sidebar - Split into 2 columns */}
+        <div className="flex w-[700px] border-l border-[#2e2e2e]">
+          {/* Left Column: Video Properties */}
+          <div className="w-[350px] border-r border-[#2e2e2e]">
+            <VideoPropertiesPanel
+              timeline={timeline}
+              showFullTranscription={showFullTranscription}
+              onToggleFull={setShowFullTranscription}
+              onSegmentClick={handleSegmentClick}
+              videoDuration={videoDuration}
+            />
           </div>
           
-          <TranscriptionPanel
-            timeline={timeline}
-            showFullTranscription={showFullTranscription}
-            onToggleFull={setShowFullTranscription}
-            onSegmentClick={handleSegmentClick}
-          />
-          
-          <EditDecisionsPanel
-            timeline={timeline}
-            onSegmentClick={handleSegmentClick}
-          />
+          {/* Right Column: Chat */}
+          <div className="w-[350px] flex flex-col bg-[#141414]">
+            <ChatInterface projectId={projectId} />
+          </div>
         </div>
       </main>
     </div>

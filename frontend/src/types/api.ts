@@ -44,7 +44,7 @@ export interface TimelineData {
   history: HistoryEntry[];
   snapshots: Snapshot[];
   layers?: {
-    edit_agent?: Record<string, any>;
+    edit_decisions?: Record<string, any>;
     [key: string]: any;
   };
 }
